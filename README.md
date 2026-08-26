@@ -15,9 +15,11 @@ pricing and infrastructure that can change.
 
 ## Current status
 
-**Research phase.** No evaluation architecture, tool, task suite, scoring rule,
-or release gate has been selected. No Hydra version has a Hydra Eval benchmark
-score yet.
+**Design proposed.** The research snapshot remains the evidence base. The
+[evaluation and optimization design](design/README.md) now recommends how to
+turn that evidence into an independent system, but no runner, task suite,
+score, threshold, CI check, or Hydra release gate has been implemented or
+approved yet. No Hydra version has a Hydra Eval benchmark score.
 
 The first research snapshot contains:
 
@@ -30,13 +32,22 @@ The first research snapshot contains:
 - a read-only [audit of Hydra's current evaluation coverage](research/hydra-current-state.md);
 - [findings, tensions, and open questions](research/findings-and-open-questions.md).
 
+The design snapshot contains:
+
+- the [system architecture and evidence model](design/evaluation-system.md);
+- the [experiment, metrics, and release-eligibility design](design/experiments-and-promotion.md);
+- the [optimization and automation design](design/optimization-and-automation.md);
+- a [decision register and unresolved questions](design/decisions-and-open-questions.md).
+
 ## Current scope
 
 - `hydra-eval` is an independent public research repository.
 - This work observes Hydra but does not change the plugin, its CI, or its releases.
-
-The future ownership of tasks, runners, results, and canary environments remains
-an open design question.
+- `hydra-eval` owns evaluation meaning, experiment records, trusted graders,
+  analysis, and public evidence. Hydra remains the evaluated product.
+- Private validation, sealed holdouts, trusted orchestration, and synthetic
+  canary repositories are separate protected surfaces; they are not stored in
+  this public repository.
 
 ## Evidence policy
 
