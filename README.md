@@ -40,8 +40,11 @@ This repository starts at `0.0.0`. It contains the evaluation foundation and fil
 EVALUATION.md       # evaluation purpose, loop, vocabulary, and first-run policy
 tasks/README.md     # Harbor-compatible task layout and task authoring boundary
 results/README.md   # reviewed evidence layout and retention rules
+VERSION             # repository foundation version: 0.0.0
 AGENTS.md           # contributor contract
 SECURITY.md         # safe handling of traces and inputs
 ```
 
 The generated Harbor `jobs/` directory is local run output and is ignored by Git. Reviewed, sanitized evidence may be copied into `results/` only after a real run.
+
+Reference material: [Harbor tasks](https://www.harborframework.com/docs/tasks), [Harbor eval jobs](https://www.harborframework.com/docs/run-jobs/run-evals), [Agent Skills evaluation](https://agentskills.io/skill-creation/evaluating-skills), [OpenAI eval skills](https://developers.openai.com/blog/eval-skills), and [LangChain's unified agent evaluation stack](https://www.langchain.com/blog/unified-stack-for-evaluating-agents).

@@ -48,6 +48,8 @@ tasks/<task-name>/
 
 `instruction.md` expresses the work; `environment/` supplies the managed input and state; `tests/test.sh` checks the result; `task.toml` carries Harbor task metadata and resource settings. Do not add a Hydra-specific task schema while the standard structure is sufficient.
 
+This choice follows the published Harbor task/job model and the practical evaluation guidance from [Agent Skills](https://agentskills.io/skill-creation/evaluating-skills) and [OpenAI](https://developers.openai.com/blog/eval-skills): start with a few realistic cases, capture the run and artifacts, add deterministic checks after seeing real outputs, and keep time and token use visible. [LangChain's unified stack](https://www.langchain.com/blog/unified-stack-for-evaluating-agents) is a useful reference for projecting Harbor runs into trace analysis; it is not a second source of task truth.
+
 ## First evaluation
 
 Start with two or three small but realistic tasks that cover different trigger/input/output shapes. Run the same external client and model in two conditions:
