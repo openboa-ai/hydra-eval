@@ -43,4 +43,6 @@ jobs:
       - name: Check public evidence hygiene
         run: |
           ! find . -type f -not -path './.git/*' -not -path './.github/*' -size +2M -print -quit | grep -q .
-          ! rg -n 'sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}' .
+          # Scan every tracked file so hidden files and force-added ignored
+          # evidence cannot bypass the public repository credential check.
+          ! git grep -n -E 'sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}' -- .
