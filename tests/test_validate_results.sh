@@ -47,6 +47,7 @@ git -C "${fixture_repo}" add \
   tasks/smoke-question-answer
 git -C "${fixture_repo}" commit -q -m evaluator-source
 evaluation_revision="$(git -C "${fixture_repo}" rev-parse HEAD)"
+fixture_verifier_sha256="$(shasum -a 256 "${fixture_repo}/tasks/smoke-question-answer/tests/test.sh" | awk '{print $1}')"
 fixture_task_checksum="$(python3 - "${source_root}" "${fixture_repo}" "${evaluation_revision}" <<'PY'
 import importlib.util
 import sys
@@ -161,12 +162,22 @@ hydra_scorecard_tmp="${hydra_result_dir}/scorecard.json.tmp"
 jq --arg revision "${evaluation_revision}" \
   --arg base_revision "${repository_base_revision}" \
   --arg bundle_sha256 "${evaluation_bundle_sha256}" \
-  --arg hydra_bundle_sha256 "${hydra_bundle_sha256}" '
+  --arg hydra_bundle_sha256 "${hydra_bundle_sha256}" \
+  --arg verifier_sha256 "${fixture_verifier_sha256}" '
     .provenance.hydra_revision = $revision
     | .provenance.hydra_bundle_sha256 = $hydra_bundle_sha256
     | .provenance.evaluation_revision = $revision
     | .provenance.evaluation_base_revision = $base_revision
     | .provenance.evaluation_bundle_sha256 = $bundle_sha256
+    | .provenance.task = "smoke-question-answer"
+    | .provenance.verifier.name = "tasks/smoke-question-answer/tests/test.sh"
+    | .provenance.verifier.revision = $revision
+    | .provenance.verifier.sha256 = $verifier_sha256
+    | .measures = {
+        elapsed_seconds: 1.5,
+        tokens: {input_tokens: 10, cache_tokens: 3, output_tokens: 2},
+        cost_usd: 0.001
+      }
   ' \
   "${hydra_result_dir}/scorecard.json" > "${hydra_scorecard_tmp}"
 mv "${hydra_scorecard_tmp}" "${hydra_result_dir}/scorecard.json"
@@ -174,9 +185,9 @@ printf '%s\n' 'artifact' > "${hydra_result_dir}/artifacts/output.txt"
 printf '%s\n' '{"passed":true,"name":"expected-output"}' > "${hydra_result_dir}/artifacts/verifier.json"
 printf '%s\n' '{"id":"harbor-job","stats":{"n_completed_trials":1,"n_errored_trials":0}}' \
   > "${hydra_result_dir}/artifacts/job-result.json"
-printf '%s\n' '{"config":{"job_id":"harbor-job"},"agent_info":{"name":"codex","version":"0.147.0","model_info":{"name":"gpt-5.6-luna"}},"exception_info":null}' \
+printf '%s\n' '{"task_name":"smoke-question-answer","config":{"job_id":"harbor-job"},"agent_info":{"name":"codex","version":"0.147.0","model_info":{"name":"gpt-5.6-luna"}},"agent_result":{"n_input_tokens":10,"n_cache_tokens":3,"n_output_tokens":2,"cost_usd":0.001},"started_at":"2026-08-27T00:00:00Z","finished_at":"2026-08-27T00:00:01.500000Z","exception_info":null}' \
   > "${hydra_result_dir}/artifacts/trial-result.json"
-printf '%s\n' '{"task":{"digest":"sha256:environment"},"agent":{"name":"codex","model_name":"openai/gpt-5.6-luna","kwargs":{"version":"0.147.0"}},"environment":{"type":"docker"}}' \
+printf '%s\n' '{"task":{"name":"smoke-question-answer","digest":"sha256:environment"},"agent":{"name":"codex","model_name":"openai/gpt-5.6-luna","kwargs":{"version":"0.147.0"}},"environment":{"type":"docker"}}' \
   > "${hydra_result_dir}/artifacts/trial-lock.json"
 write_hydra_checksums "${hydra_result_dir}"
 
@@ -596,6 +607,25 @@ if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
 fi
 mv "${wrong_execution_dir}" "${fixture_repo}/wrong-hydra-execution-result"
 
+wrong_verifier_result_id="00000000-0000-0000-0000-000000000028"
+wrong_verifier_dir="${fixture_repo}/results/hydra/0.1.0/${wrong_verifier_result_id}"
+cp -R "${hydra_result_dir}" "${wrong_verifier_dir}"
+wrong_verifier_scorecard_tmp="${wrong_verifier_dir}/scorecard.json.tmp"
+jq --arg result_id "${wrong_verifier_result_id}" '
+  .result_id = $result_id
+  | .provenance.verifier.name = "tasks/smoke-question-answer/tests/other.sh"
+  | .provenance.verifier.revision = "ffffffffffffffffffffffffffffffffffffffff"
+  | .provenance.verifier.sha256 = ("f" * 64)
+' "${wrong_verifier_dir}/scorecard.json" > "${wrong_verifier_scorecard_tmp}"
+mv "${wrong_verifier_scorecard_tmp}" "${wrong_verifier_dir}/scorecard.json"
+write_hydra_checksums "${wrong_verifier_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: Hydra verifier diverging from task and bundled source was accepted' >&2
+  exit 1
+fi
+mv "${wrong_verifier_dir}" "${fixture_repo}/wrong-hydra-verifier-result"
+
 unsupported_pass_result_id="00000000-0000-0000-0000-000000000012"
 unsupported_pass_dir="${fixture_repo}/results/hydra/0.1.0/${unsupported_pass_result_id}"
 cp -R "${hydra_result_dir}" "${unsupported_pass_dir}"
@@ -670,7 +700,7 @@ cp -R "${hydra_result_dir}" "${nested_composite_dir}"
 nested_composite_scorecard_tmp="${nested_composite_dir}/scorecard.json.tmp"
 jq --arg result_id "${nested_composite_result_id}" '
   .result_id = $result_id
-  | .measures = {tokens: {composite_score: 1}}
+  | .measures = {elapsed_seconds: 1.5, tokens: {composite_score: 1}}
 ' "${nested_composite_dir}/scorecard.json" > "${nested_composite_scorecard_tmp}"
 mv "${nested_composite_scorecard_tmp}" "${nested_composite_dir}/scorecard.json"
 write_hydra_checksums "${nested_composite_dir}"
@@ -680,6 +710,25 @@ if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
   exit 1
 fi
 mv "${nested_composite_dir}" "${fixture_repo}/nested-composite-measure-result"
+
+wrong_measure_result_id="00000000-0000-0000-0000-000000000029"
+wrong_measure_dir="${fixture_repo}/results/hydra/0.1.0/${wrong_measure_result_id}"
+cp -R "${hydra_result_dir}" "${wrong_measure_dir}"
+wrong_measure_scorecard_tmp="${wrong_measure_dir}/scorecard.json.tmp"
+jq --arg result_id "${wrong_measure_result_id}" '
+  .result_id = $result_id
+  | .measures.elapsed_seconds = 99
+  | .measures.tokens.input_tokens = 999
+  | .measures.cost_usd = 99
+' "${wrong_measure_dir}/scorecard.json" > "${wrong_measure_scorecard_tmp}"
+mv "${wrong_measure_scorecard_tmp}" "${wrong_measure_dir}/scorecard.json"
+write_hydra_checksums "${wrong_measure_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: Hydra measures diverging from native trial evidence were accepted' >&2
+  exit 1
+fi
+mv "${wrong_measure_dir}" "${fixture_repo}/wrong-hydra-measure-result"
 
 printf '%s\n' '41' > "${result_dir}/harbor/answer.txt"
 git -C "${fixture_repo}" add results

@@ -130,6 +130,8 @@ validate_result() {
   local hydra_bundle_sha256=""
   local harbor_constraints_sha256=""
   local environment_image=""
+  local verifier_name=""
+  local verifier_sha256=""
 
   validation_index=$((validation_index + 1))
   result_id="$(basename "${result_dir}")"
@@ -414,23 +416,13 @@ PY
       def matches($pattern): type == "string" and test($pattern);
       def nonempty: type == "string" and length > 0;
       def nonnegative_number: type == "number" and . >= 0;
-      def observed_measure:
-        nonnegative_number
-        or (
-          type == "object"
-          and length > 0
-          and ([.. | numbers] | length > 0)
-          and all(.. | numbers; . >= 0)
-          and (
-            [
-              ..
-              | objects
-              | keys[]
-              | select(. == "score" or . == "overall_score" or . == "composite_score")
-            ]
-            | length == 0
-          )
-        );
+      def nonnegative_integer:
+        type == "number" and . >= 0 and floor == .;
+      def source_path:
+        type == "string"
+        and test("^[A-Za-z0-9._/-]+$")
+        and startswith("/") == false
+        and (contains("..") | not);
       def evidence_path:
         type == "string"
         and test("^artifacts/[A-Za-z0-9._/-]+$")
@@ -447,14 +439,18 @@ PY
         or (.provenance.evaluation_base_revision | matches("^[0-9a-f]{40}$"))
       )
       and (.provenance.evaluation_bundle_sha256 | matches("^[0-9a-f]{64}$"))
-      and (.provenance.task | nonempty)
+      and (.provenance.task | matches("^[A-Za-z0-9._-]+$"))
       and (.provenance.client.name | nonempty)
       and (.provenance.client.version | nonempty)
       and (.provenance.model.name | nonempty)
       and (.provenance.environment.fingerprint | nonempty)
       and (.provenance.job_id | nonempty)
-      and (.provenance.verifier.name | nonempty)
-      and ((.provenance.verifier.version // .provenance.verifier.revision) | nonempty)
+      and (.provenance.verifier.name | source_path)
+      and .provenance.verifier.name == (
+        "tasks/" + .provenance.task + "/tests/test.sh"
+      )
+      and .provenance.verifier.revision == .provenance.evaluation_revision
+      and (.provenance.verifier.sha256 | matches("^[0-9a-f]{64}$"))
       and (.assertions | type == "array" and length > 0)
       and ((.assertions | map(.name) | unique | length) == (.assertions | length))
       and ((.assertions | map(.evidence) | unique | length) == (.assertions | length))
@@ -493,24 +489,27 @@ PY
         .measures
         | type == "object"
         and length > 0
+        and ((keys - ["cost_usd", "elapsed_seconds", "tokens"]) | length == 0)
         and (
-          [
-            ..
-            | objects
-            | keys[]
-            | select(. == "score" or . == "overall_score" or . == "composite_score")
-          ]
-          | length == 0
+          (has("elapsed_seconds") | not)
+          or (.elapsed_seconds | nonnegative_number)
         )
         and (
-          (.elapsed_seconds | observed_measure)
-          or (.duration_seconds | observed_measure)
-          or (.latency_seconds | observed_measure)
-          or (.time | observed_measure)
-          or (.tokens | observed_measure)
-          or (.cost | observed_measure)
-          or (.quality | observed_measure)
-          or (.safety | observed_measure)
+          (has("tokens") | not)
+          or (
+            (.tokens | type == "object")
+            and (
+              (.tokens | keys - ["cache_tokens", "input_tokens", "output_tokens"])
+              | length == 0
+            )
+            and (.tokens.input_tokens | nonnegative_integer)
+            and (.tokens.output_tokens | nonnegative_integer)
+            and ((.tokens | has("cache_tokens") | not) or (.tokens.cache_tokens | nonnegative_integer))
+          )
+        )
+        and (
+          (has("cost_usd") | not)
+          or (.cost_usd | nonnegative_number)
         )
       )
     ' "${result_dir}/scorecard.json" >/dev/null \
@@ -542,6 +541,7 @@ PY
       || fail "Hydra job result does not match execution provenance in ${result_label}"
     jq -e --slurpfile scorecard "${result_dir}/scorecard.json" '
       .config.job_id == $scorecard[0].provenance.job_id
+      and .task_name == $scorecard[0].provenance.task
       and .agent_info.name == $scorecard[0].provenance.client.name
       and .agent_info.version == $scorecard[0].provenance.client.version
       and .agent_info.model_info.name == $scorecard[0].provenance.model.name
@@ -556,7 +556,8 @@ PY
     jq -e --slurpfile scorecard "${result_dir}/scorecard.json" '
       def nonempty: type == "string" and test("\\S");
       ($scorecard[0].provenance.model.name) as $model
-      | .task.digest == $scorecard[0].provenance.environment.fingerprint
+      | .task.name == $scorecard[0].provenance.task
+      and .task.digest == $scorecard[0].provenance.environment.fingerprint
       and .agent.name == $scorecard[0].provenance.client.name
       and .agent.kwargs.version == $scorecard[0].provenance.client.version
       and (
@@ -566,13 +567,56 @@ PY
       and (.environment.type | nonempty)
     ' "${result_dir}/artifacts/trial-lock.json" >/dev/null \
       || fail "Hydra trial lock does not match execution provenance in ${result_label}"
+    if ! python3 - "${result_dir}/scorecard.json" \
+      "${result_dir}/artifacts/trial-result.json" <<'PY'
+import json
+import math
+import sys
+from datetime import datetime
+from pathlib import Path
+
+scorecard = json.loads(Path(sys.argv[1]).read_text())
+trial = json.loads(Path(sys.argv[2]).read_text())
+measures = scorecard["measures"]
+
+if "elapsed_seconds" in measures:
+    started = datetime.fromisoformat(trial["started_at"].replace("Z", "+00:00"))
+    finished = datetime.fromisoformat(trial["finished_at"].replace("Z", "+00:00"))
+    observed = (finished - started).total_seconds()
+    if not math.isclose(
+        observed, measures["elapsed_seconds"], rel_tol=0.0, abs_tol=1e-6
+    ):
+        raise SystemExit("Hydra elapsed_seconds does not match trial timestamps")
+
+agent_result = trial.get("agent_result")
+if not isinstance(agent_result, dict):
+    raise SystemExit("Hydra trial result has no agent_result measures")
+if "tokens" in measures:
+    mapping = {
+        "input_tokens": "n_input_tokens",
+        "cache_tokens": "n_cache_tokens",
+        "output_tokens": "n_output_tokens",
+    }
+    for public_name, native_name in mapping.items():
+        if public_name in measures["tokens"]:
+            if measures["tokens"][public_name] != agent_result.get(native_name):
+                raise SystemExit(f"Hydra {public_name} does not match trial evidence")
+if "cost_usd" in measures and measures["cost_usd"] != agent_result.get("cost_usd"):
+    raise SystemExit("Hydra cost_usd does not match trial evidence")
+PY
+    then
+      fail "Hydra measures do not match native trial evidence in ${result_label}"
+    fi
     evaluation_revision="$(jq -r '.provenance.evaluation_revision' "${result_dir}/scorecard.json")"
     evaluation_base_revision="$(jq -r '.provenance.evaluation_base_revision' "${result_dir}/scorecard.json")"
     evaluation_bundle_sha256="$(jq -r '.provenance.evaluation_bundle_sha256' "${result_dir}/scorecard.json")"
     hydra_revision="$(jq -r '.provenance.hydra_revision' "${result_dir}/scorecard.json")"
     hydra_bundle_sha256="$(jq -r '.provenance.hydra_bundle_sha256' "${result_dir}/scorecard.json")"
+    verifier_name="$(jq -r '.provenance.verifier.name' "${result_dir}/scorecard.json")"
+    verifier_sha256="$(jq -r '.provenance.verifier.sha256' "${result_dir}/scorecard.json")"
     validate_evaluation_bundle "${result_dir}" "${result_label}" \
-      "${evaluation_revision}" "${evaluation_base_revision}" "${evaluation_bundle_sha256}"
+      "${evaluation_revision}" "${evaluation_base_revision}" "${evaluation_bundle_sha256}" \
+      "${verifier_name}=${verifier_sha256}"
     validate_hydra_bundle "${result_dir}" "${result_label}" \
       "${hydra_revision}" "${hydra_bundle_sha256}"
   fi
