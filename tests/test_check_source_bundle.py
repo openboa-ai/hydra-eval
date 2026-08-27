@@ -69,31 +69,42 @@ class SourceBundleTest(unittest.TestCase):
                 )
 
     def test_rejects_secret_in_deleted_blob(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            repository, base_revision = self.make_repository(root)
-            secret = "sk-" + ("a" * 24)
-            (repository / "temporary-credential.txt").write_text(secret + "\n")
-            self.git(repository, "add", "temporary-credential.txt")
-            self.git(repository, "commit", "--quiet", "-m", "temporary credential")
-            (repository / "temporary-credential.txt").unlink()
-            self.git(repository, "add", "-u")
-            self.git(repository, "commit", "--quiet", "-m", "remove credential")
-            evaluation_revision = self.git(repository, "rev-parse", "HEAD")
-            bundle = root / "evaluation.bundle"
-            self.git(
-                repository,
-                "bundle",
-                "create",
-                str(bundle),
-                "HEAD",
-                f"^{base_revision}",
-            )
+        secrets = (
+            "sk-" + ("a" * 24),
+            "ACCESS_" + "TOKEN=" + ("a" * 24),
+        )
+        for secret in secrets:
+            with self.subTest(prefix=secret[:8]):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    repository, base_revision = self.make_repository(root)
+                    (repository / "temporary-credential.txt").write_text(secret + "\n")
+                    self.git(repository, "add", "temporary-credential.txt")
+                    self.git(
+                        repository,
+                        "commit",
+                        "--quiet",
+                        "-m",
+                        "temporary credential",
+                    )
+                    (repository / "temporary-credential.txt").unlink()
+                    self.git(repository, "add", "-u")
+                    self.git(repository, "commit", "--quiet", "-m", "remove credential")
+                    evaluation_revision = self.git(repository, "rev-parse", "HEAD")
+                    bundle = root / "evaluation.bundle"
+                    self.git(
+                        repository,
+                        "bundle",
+                        "create",
+                        str(bundle),
+                        "HEAD",
+                        f"^{base_revision}",
+                    )
 
-            with self.assertRaises(check_source_bundle.BundleError):
-                check_source_bundle.check_bundle(
-                    bundle, evaluation_revision, base_revision, repository
-                )
+                    with self.assertRaises(check_source_bundle.BundleError):
+                        check_source_bundle.check_bundle(
+                            bundle, evaluation_revision, base_revision, repository
+                        )
 
     def test_accepts_self_contained_candidate_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
