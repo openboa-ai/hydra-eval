@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="${HYDRA_EVAL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="${HYDRA_EVAL_REPO_ROOT:-$(cd "${script_dir}/.." && pwd)}"
 smoke_root="${repo_root}/results/smoke"
 hydra_root="${repo_root}/results/hydra"
+source_bundle_checker="${script_dir}/check_source_bundle.py"
 base_sha="${1:-}"
 head_sha="${2:-HEAD}"
 temporary="$(mktemp -d /tmp/hydra-eval-results-validation.XXXXXX)"
@@ -58,14 +60,34 @@ validate_evaluation_bundle() {
   local bundle_path="${result_dir}/source/evaluation.bundle"
 
   [[ -f "${bundle_path}" ]] || fail "missing source/evaluation.bundle in ${result_label}"
+  [[ -x "${source_bundle_checker}" ]] || fail "missing executable source-bundle checker"
   validate_local_revision "${evaluation_base_revision}" "evaluation base revision in ${result_label}"
   [[ "$(shasum -a 256 "${bundle_path}" | awk '{print $1}')" == "${evaluation_bundle_sha256}" ]] \
     || fail "evaluation source bundle digest does not match the scorecard in ${result_label}"
-  git -C "${repo_root}" bundle verify "${bundle_path}" >/dev/null 2>&1 \
-    || fail "evaluation source bundle is invalid in ${result_label}"
-  git -C "${repo_root}" bundle list-heads "${bundle_path}" \
-    | awk -v revision="${evaluation_revision}" '$1 == revision && $2 == "HEAD" { found = 1 } END { exit !found }' \
-    || fail "evaluation source bundle does not preserve ${evaluation_revision} in ${result_label}"
+  python3 "${source_bundle_checker}" \
+    --bundle "${bundle_path}" \
+    --revision "${evaluation_revision}" \
+    --expected-prerequisite "${evaluation_base_revision}" \
+    --repository "${repo_root}" >/dev/null \
+    || fail "evaluation source bundle provenance or object safety failed in ${result_label}"
+}
+
+validate_hydra_bundle() {
+  local result_dir="$1"
+  local result_label="$2"
+  local hydra_revision="$3"
+  local hydra_bundle_sha256="$4"
+  local bundle_path="${result_dir}/source/hydra.bundle"
+
+  [[ -f "${bundle_path}" ]] || fail "missing source/hydra.bundle in ${result_label}"
+  [[ -x "${source_bundle_checker}" ]] || fail "missing executable source-bundle checker"
+  [[ "$(shasum -a 256 "${bundle_path}" | awk '{print $1}')" == "${hydra_bundle_sha256}" ]] \
+    || fail "Hydra source bundle digest does not match the scorecard in ${result_label}"
+  python3 "${source_bundle_checker}" \
+    --bundle "${bundle_path}" \
+    --revision "${hydra_revision}" \
+    --expected-prerequisite none >/dev/null \
+    || fail "Hydra source bundle provenance or object safety failed in ${result_label}"
 }
 
 validate_result() {
@@ -79,6 +101,8 @@ validate_result() {
   local evidence_collector_revision=""
   local evaluation_base_revision=""
   local evaluation_bundle_sha256=""
+  local hydra_revision=""
+  local hydra_bundle_sha256=""
 
   validation_index=$((validation_index + 1))
   result_id="$(basename "${result_dir}")"
@@ -244,6 +268,8 @@ PY
       || fail "missing machine-readable scorecard.json in ${result_label}"
     [[ -f "${result_dir}/source/evaluation.bundle" ]] \
       || fail "missing source/evaluation.bundle in ${result_label}"
+    [[ -f "${result_dir}/source/hydra.bundle" ]] \
+      || fail "missing source/hydra.bundle in ${result_label}"
     hydra_version="$(basename "$(dirname "${result_dir}")")"
     jq -e --arg hydra_version "${hydra_version}" --arg result_id "${result_id}" '
       def matches($pattern): type == "string" and test($pattern);
@@ -253,6 +279,7 @@ PY
       and .result_id == $result_id
       and (.status | nonempty)
       and (.provenance.hydra_revision | matches("^[0-9a-f]{40}$"))
+      and (.provenance.hydra_bundle_sha256 | matches("^[0-9a-f]{64}$"))
       and (.provenance.evaluation_revision | matches("^[0-9a-f]{40}$"))
       and (.provenance.evaluation_base_revision | matches("^[0-9a-f]{40}$"))
       and (.provenance.evaluation_bundle_sha256 | matches("^[0-9a-f]{64}$"))
@@ -269,8 +296,12 @@ PY
     evaluation_revision="$(jq -r '.provenance.evaluation_revision' "${result_dir}/scorecard.json")"
     evaluation_base_revision="$(jq -r '.provenance.evaluation_base_revision' "${result_dir}/scorecard.json")"
     evaluation_bundle_sha256="$(jq -r '.provenance.evaluation_bundle_sha256' "${result_dir}/scorecard.json")"
+    hydra_revision="$(jq -r '.provenance.hydra_revision' "${result_dir}/scorecard.json")"
+    hydra_bundle_sha256="$(jq -r '.provenance.hydra_bundle_sha256' "${result_dir}/scorecard.json")"
     validate_evaluation_bundle "${result_dir}" "${result_label}" \
       "${evaluation_revision}" "${evaluation_base_revision}" "${evaluation_bundle_sha256}"
+    validate_hydra_bundle "${result_dir}" "${result_label}" \
+      "${hydra_revision}" "${hydra_bundle_sha256}"
   fi
 
   if grep -Ev '^[0-9a-f]{64}  [^/].+$' "${result_dir}/checksums.txt" | grep -q .; then

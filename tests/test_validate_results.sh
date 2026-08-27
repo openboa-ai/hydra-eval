@@ -45,6 +45,21 @@ write_smoke_checksums() {
   )
 }
 
+write_hydra_checksums() {
+  local directory="$1"
+  (
+    cd "${directory}"
+    for path in \
+      README.md \
+      artifacts/output.txt \
+      scorecard.json \
+      source/evaluation.bundle \
+      source/hydra.bundle; do
+      shasum -a 256 "${path}"
+    done > checksums.txt
+  )
+}
+
 job_id="00000000-0000-0000-0000-000000000001"
 result_dir="${fixture_repo}/results/smoke/${job_id}"
 mkdir -p "${result_dir}/harbor"
@@ -81,25 +96,25 @@ hydra_result_id="00000000-0000-0000-0000-000000000002"
 hydra_result_dir="${fixture_repo}/results/hydra/0.1.0/${hydra_result_id}"
 mkdir -p "${hydra_result_dir}/artifacts" "${hydra_result_dir}/source"
 cp "${result_dir}/source/evaluation.bundle" "${hydra_result_dir}/source/evaluation.bundle"
+git -C "${fixture_repo}" bundle create "${hydra_result_dir}/source/hydra.bundle" HEAD
+hydra_bundle_sha256="$(shasum -a 256 "${hydra_result_dir}/source/hydra.bundle" | awk '{print $1}')"
 printf '%s\n' '# Hydra fixture' > "${hydra_result_dir}/README.md"
-printf '%s\n' '{"kind":"hydra_evaluation","hydra_version":"0.1.0","result_id":"00000000-0000-0000-0000-000000000002","status":"pass","provenance":{"hydra_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","evaluation_revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","task":"project-task","client":{"name":"codex","version":"0.147.0"},"model":{"name":"gpt-5.6-luna"},"environment":{"fingerprint":"sha256:environment"},"job_id":"harbor-job","verifier":{"name":"deterministic-tests","revision":"cccccccccccccccccccccccccccccccccccccccc"}}}' > "${hydra_result_dir}/scorecard.json"
+printf '%s\n' '{"kind":"hydra_evaluation","hydra_version":"0.1.0","result_id":"00000000-0000-0000-0000-000000000002","status":"pass","provenance":{"hydra_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","hydra_bundle_sha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","evaluation_revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","task":"project-task","client":{"name":"codex","version":"0.147.0"},"model":{"name":"gpt-5.6-luna"},"environment":{"fingerprint":"sha256:environment"},"job_id":"harbor-job","verifier":{"name":"deterministic-tests","revision":"cccccccccccccccccccccccccccccccccccccccc"}}}' > "${hydra_result_dir}/scorecard.json"
 hydra_scorecard_tmp="${hydra_result_dir}/scorecard.json.tmp"
 jq --arg revision "${evaluation_revision}" \
   --arg base_revision "${repository_base_revision}" \
-  --arg bundle_sha256 "${evaluation_bundle_sha256}" '
-    .provenance.evaluation_revision = $revision
+  --arg bundle_sha256 "${evaluation_bundle_sha256}" \
+  --arg hydra_bundle_sha256 "${hydra_bundle_sha256}" '
+    .provenance.hydra_revision = $revision
+    | .provenance.hydra_bundle_sha256 = $hydra_bundle_sha256
+    | .provenance.evaluation_revision = $revision
     | .provenance.evaluation_base_revision = $base_revision
     | .provenance.evaluation_bundle_sha256 = $bundle_sha256
   ' \
   "${hydra_result_dir}/scorecard.json" > "${hydra_scorecard_tmp}"
 mv "${hydra_scorecard_tmp}" "${hydra_result_dir}/scorecard.json"
 printf '%s\n' 'artifact' > "${hydra_result_dir}/artifacts/output.txt"
-(
-  cd "${hydra_result_dir}"
-  for path in README.md artifacts/output.txt scorecard.json source/evaluation.bundle; do
-    shasum -a 256 "${path}"
-  done > checksums.txt
-)
+write_hydra_checksums "${hydra_result_dir}"
 
 git -C "${fixture_repo}" add results
 git -C "${fixture_repo}" commit -q -m fixture
@@ -158,6 +173,27 @@ if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
   exit 1
 fi
 mv "${unreachable_result_dir}" "${fixture_repo}/unreachable-smoke-result"
+
+wrong_base_job_id="00000000-0000-0000-0000-000000000009"
+wrong_base_dir="${fixture_repo}/results/smoke/${wrong_base_job_id}"
+cp -R "${result_dir}" "${wrong_base_dir}"
+wrong_base_scorecard_tmp="${wrong_base_dir}/scorecard.json.tmp"
+jq --arg job_id "${wrong_base_job_id}" --arg revision "${evaluation_revision}" '
+  .job_id = $job_id
+  | .provenance.evaluation_base_revision = $revision
+' "${wrong_base_dir}/scorecard.json" > "${wrong_base_scorecard_tmp}"
+mv "${wrong_base_scorecard_tmp}" "${wrong_base_dir}/scorecard.json"
+wrong_base_job_tmp="${wrong_base_dir}/harbor/job-result.json.tmp"
+jq --arg job_id "${wrong_base_job_id}" '.id = $job_id' \
+  "${wrong_base_dir}/harbor/job-result.json" > "${wrong_base_job_tmp}"
+mv "${wrong_base_job_tmp}" "${wrong_base_dir}/harbor/job-result.json"
+write_smoke_checksums "${wrong_base_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: recorded base diverging from bundle prerequisite was accepted' >&2
+  exit 1
+fi
+mv "${wrong_base_dir}" "${fixture_repo}/wrong-base-smoke-result"
 
 wrong_tokens_job_id="00000000-0000-0000-0000-000000000006"
 wrong_tokens_dir="${fixture_repo}/results/smoke/${wrong_tokens_job_id}"
@@ -236,6 +272,24 @@ if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
   exit 1
 fi
 mv "${invalid_result_dir}" "${fixture_repo}/invalid-hydra-result"
+
+wrong_hydra_result_id="00000000-0000-0000-0000-000000000011"
+wrong_hydra_dir="${fixture_repo}/results/hydra/0.1.0/${wrong_hydra_result_id}"
+cp -R "${hydra_result_dir}" "${wrong_hydra_dir}"
+wrong_hydra_scorecard_tmp="${wrong_hydra_dir}/scorecard.json.tmp"
+jq --arg result_id "${wrong_hydra_result_id}" \
+  --arg revision "ffffffffffffffffffffffffffffffffffffffff" '
+  .result_id = $result_id
+  | .provenance.hydra_revision = $revision
+' "${wrong_hydra_dir}/scorecard.json" > "${wrong_hydra_scorecard_tmp}"
+mv "${wrong_hydra_scorecard_tmp}" "${wrong_hydra_dir}/scorecard.json"
+write_hydra_checksums "${wrong_hydra_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: Hydra revision absent from its source bundle was accepted' >&2
+  exit 1
+fi
+mv "${wrong_hydra_dir}" "${fixture_repo}/wrong-hydra-revision-result"
 
 printf '%s\n' '41' > "${result_dir}/harbor/answer.txt"
 git -C "${fixture_repo}" add results

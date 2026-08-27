@@ -15,6 +15,7 @@ codex_config="${repo_root}/config/codex-low-cost.toml"
 judge_prompt="${repo_root}/judges/smoke-question-answer.md"
 judge_schema="${repo_root}/judges/smoke-question-answer.schema.json"
 harbor_constraints="${repo_root}/config/harbor-0.22.0.constraints"
+source_bundle_checker="${repo_root}/scripts/check_source_bundle.py"
 environment_image=""
 environment_manifest_digest=""
 container_platform=""
@@ -55,6 +56,7 @@ done
 [[ -f "${task_dir}/task.toml" ]] || fail "missing smoke task"
 [[ -f "${codex_config}" ]] || fail "missing Codex config"
 [[ -f "${harbor_constraints}" ]] || fail "missing Harbor constraints"
+[[ -x "${source_bundle_checker}" ]] || fail "missing executable source-bundle checker"
 environment_image="$(awk 'toupper($1) == "FROM" {print $2; exit}' "${task_dir}/environment/Dockerfile")"
 [[ "${environment_image}" =~ ^ubuntu:24\.04@sha256:[a-f0-9]{64}$ ]] || fail "smoke environment image is not pinned by digest"
 harbor_constraints_sha256="$(shasum -a 256 "${harbor_constraints}" | awk '{print $1}')"
@@ -221,6 +223,12 @@ git -C "${repo_root}" bundle verify "${evaluation_source_bundle}" >/dev/null
 git -C "${repo_root}" bundle list-heads "${evaluation_source_bundle}" \
   | awk -v revision="${evaluation_revision}" '$1 == revision && $2 == "HEAD" { found = 1 } END { exit !found }' \
   || fail "evaluation source bundle does not advertise the evaluation revision"
+python3 "${source_bundle_checker}" \
+  --bundle "${evaluation_source_bundle}" \
+  --revision "${evaluation_revision}" \
+  --expected-prerequisite "${evaluation_base_revision}" \
+  --repository "${repo_root}" >/dev/null \
+  || fail "evaluation source bundle failed object-level safety and provenance checks"
 run_id="$(date -u +%Y%m%dT%H%M%SZ)-${evaluation_revision:0:12}"
 oracle_job_name="smoke-oracle-${run_id}"
 codex_job_name="smoke-codex-${run_id}"
@@ -304,6 +312,7 @@ result_dir="$(python3 "${repo_root}/scripts/collect_smoke.py" \
   --evidence-collector-revision "${evaluation_revision}" \
   --evaluation-base-revision "${evaluation_base_revision}" \
   --evaluation-source-bundle "${evaluation_source_bundle}" \
+  --repository-root "${repo_root}" \
   --environment-image "${environment_image}" \
   --harbor-version "${HARBOR_VERSION}" \
   --harbor-python-version "${HARBOR_PYTHON_VERSION}" \

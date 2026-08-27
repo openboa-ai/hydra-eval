@@ -1,6 +1,7 @@
 import importlib.util
 import hashlib
 import json
+import subprocess
 import tempfile
 import types
 import unittest
@@ -20,6 +21,36 @@ def write_json(path: Path, value: object) -> None:
 
 
 class CollectSmokeTest(unittest.TestCase):
+    def make_evaluation_bundle(
+        self, root: Path
+    ) -> tuple[Path, Path, str, str]:
+        repository = root / "evaluation-source"
+        bundle = root / "evaluation.bundle"
+
+        def git(*arguments: str) -> str:
+            return subprocess.run(
+                ["git", "-C", str(repository), *arguments],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+
+        repository.mkdir()
+        git("init", "--quiet")
+        git("config", "user.name", "hydra-eval-test")
+        git("config", "user.email", "hydra-eval-test@example.invalid")
+        (repository / "base.txt").write_text("base\n")
+        git("add", "base.txt")
+        git("commit", "--quiet", "-m", "base")
+        base_revision = git("rev-parse", "HEAD")
+        (repository / "evaluator.txt").write_text("evaluator\n")
+        git("add", "evaluator.txt")
+        git("commit", "--quiet", "-m", "evaluator")
+        evaluation_revision = git("rev-parse", "HEAD")
+        git("bundle", "create", str(bundle), "HEAD", f"^{base_revision}")
+        return repository, bundle, evaluation_revision, base_revision
+
     def make_job(self, root: Path, name: str, agent: str, job_id: str) -> Path:
         job_dir = root / name
         trial_dir = job_dir / "trial-1"
@@ -116,18 +147,23 @@ class CollectSmokeTest(unittest.TestCase):
                 )
                 + "\n"
             )
-            evaluation_source_bundle = root / "evaluation.bundle"
-            evaluation_source_bundle.write_bytes(b"test evaluation bundle")
+            (
+                repository_root,
+                evaluation_source_bundle,
+                evaluation_revision,
+                evaluation_base_revision,
+            ) = self.make_evaluation_bundle(root)
             args = types.SimpleNamespace(
                 oracle_job_dir=oracle,
                 job_dir=codex,
                 judge_result=judge_result,
                 judge_events=judge_events,
                 results_root=root / "results",
-                evaluation_revision="a" * 40,
-                evidence_collector_revision="c" * 40,
-                evaluation_base_revision="0" * 40,
+                evaluation_revision=evaluation_revision,
+                evidence_collector_revision=evaluation_revision,
+                evaluation_base_revision=evaluation_base_revision,
                 evaluation_source_bundle=evaluation_source_bundle,
+                repository_root=repository_root,
                 environment_image="ubuntu:24.04@sha256:" + "e" * 64,
                 harbor_version="0.22.0",
                 harbor_python_version="3.12.11",
@@ -153,12 +189,16 @@ class CollectSmokeTest(unittest.TestCase):
             self.assertEqual(scorecard["provenance"]["solver_reasoning"], "low")
             self.assertEqual(scorecard["provenance"]["judge_agent_version"], "0.144.5")
             self.assertEqual(
-                scorecard["provenance"]["evidence_collector_revision"], "c" * 40
+                scorecard["provenance"]["evidence_collector_revision"],
+                evaluation_revision,
             )
-            self.assertEqual(scorecard["provenance"]["evaluation_base_revision"], "0" * 40)
+            self.assertEqual(
+                scorecard["provenance"]["evaluation_base_revision"],
+                evaluation_base_revision,
+            )
             self.assertEqual(
                 scorecard["provenance"]["evaluation_bundle_sha256"],
-                hashlib.sha256(b"test evaluation bundle").hexdigest(),
+                hashlib.sha256(evaluation_source_bundle.read_bytes()).hexdigest(),
             )
             self.assertEqual(
                 scorecard["provenance"]["environment_image"],
@@ -230,18 +270,23 @@ class CollectSmokeTest(unittest.TestCase):
             judge_events.write_text(
                 json.dumps({"usage": {"input_tokens": 1, "output_tokens": 1}}) + "\n"
             )
-            evaluation_source_bundle = root / "evaluation.bundle"
-            evaluation_source_bundle.write_bytes(b"test evaluation bundle")
+            (
+                repository_root,
+                evaluation_source_bundle,
+                evaluation_revision,
+                evaluation_base_revision,
+            ) = self.make_evaluation_bundle(root)
             args = types.SimpleNamespace(
                 oracle_job_dir=oracle,
                 job_dir=codex,
                 judge_result=judge_result,
                 judge_events=judge_events,
                 results_root=root / "results",
-                evaluation_revision="e" * 40,
-                evidence_collector_revision="f" * 40,
-                evaluation_base_revision="0" * 40,
+                evaluation_revision=evaluation_revision,
+                evidence_collector_revision=evaluation_revision,
+                evaluation_base_revision=evaluation_base_revision,
                 evaluation_source_bundle=evaluation_source_bundle,
+                repository_root=repository_root,
                 environment_image="ubuntu:24.04@sha256:" + "e" * 64,
                 harbor_version="0.22.0",
                 harbor_python_version="3.12.11",
@@ -279,18 +324,23 @@ class CollectSmokeTest(unittest.TestCase):
             judge_events.write_text(
                 json.dumps({"usage": {"input_tokens": 1, "output_tokens": 1}}) + "\n"
             )
-            evaluation_source_bundle = root / "evaluation.bundle"
-            evaluation_source_bundle.write_bytes(b"test evaluation bundle")
+            (
+                repository_root,
+                evaluation_source_bundle,
+                evaluation_revision,
+                evaluation_base_revision,
+            ) = self.make_evaluation_bundle(root)
             args = types.SimpleNamespace(
                 oracle_job_dir=oracle,
                 job_dir=codex,
                 judge_result=judge_result,
                 judge_events=judge_events,
                 results_root=root / "results",
-                evaluation_revision="b" * 40,
-                evidence_collector_revision="d" * 40,
-                evaluation_base_revision="0" * 40,
+                evaluation_revision=evaluation_revision,
+                evidence_collector_revision=evaluation_revision,
+                evaluation_base_revision=evaluation_base_revision,
                 evaluation_source_bundle=evaluation_source_bundle,
+                repository_root=repository_root,
                 environment_image="ubuntu:24.04@sha256:" + "e" * 64,
                 harbor_version="0.22.0",
                 harbor_python_version="3.12.11",

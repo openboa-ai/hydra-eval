@@ -40,6 +40,7 @@ jobs:
           test -x tasks/smoke-question-answer/solution/solve.sh
           test -x scripts/run-smoke.sh
           test -x scripts/collect_smoke.py
+          test -x scripts/check_source_bundle.py
           test -x scripts/validate-results.sh
           test -x tests/test_validate_results.sh
           test -f judges/smoke-question-answer.schema.json
@@ -54,6 +55,7 @@ jobs:
           bash -n tests/test_validate_results.sh
           bash -n tasks/smoke-question-answer/tests/test.sh
           bash -n tasks/smoke-question-answer/solution/solve.sh
+          python3 scripts/check_source_bundle.py --help >/dev/null
           grep -Eq '^FROM ubuntu:24\.04@sha256:[0-9a-f]{64}$' tasks/smoke-question-answer/environment/Dockerfile
           untracked_probe=tasks/smoke-question-answer/environment/.untracked-eval-input
           touch "$untracked_probe"

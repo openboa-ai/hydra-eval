@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from datetime import datetime
@@ -155,6 +156,31 @@ def copy_checked(source: Path, target: Path) -> None:
     target.write_bytes(data)
 
 
+def check_evaluation_bundle(args: argparse.Namespace) -> None:
+    checker = Path(__file__).with_name("check_source_bundle.py")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(checker),
+            "--bundle",
+            str(args.evaluation_source_bundle),
+            "--revision",
+            args.evaluation_revision,
+            "--expected-prerequisite",
+            args.evaluation_base_revision,
+            "--repository",
+            str(args.repository_root),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or "bundle inspection failed"
+        raise EvidenceError(f"evaluation source bundle is not publishable: {detail}")
+
+
 def sanitize_trajectory(trajectory: dict[str, Any], public_session_id: str) -> dict[str, Any]:
     public_steps: list[dict[str, Any]] = []
     for step in trajectory.get("steps", []):
@@ -259,6 +285,7 @@ def build_evidence(args: argparse.Namespace) -> Path:
     judge_usage = find_usage(judge_events)
     if judge_usage is None:
         raise EvidenceError("judge JSONL does not contain token usage")
+    check_evaluation_bundle(args)
     try:
         evaluation_bundle_data = args.evaluation_source_bundle.read_bytes()
     except OSError as exc:
@@ -424,6 +451,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--evidence-collector-revision", required=True)
     parser.add_argument("--evaluation-base-revision", required=True)
     parser.add_argument("--evaluation-source-bundle", type=Path, required=True)
+    parser.add_argument("--repository-root", type=Path, required=True)
     parser.add_argument("--environment-image", required=True)
     parser.add_argument("--harbor-version", required=True)
     parser.add_argument("--harbor-python-version", required=True)
