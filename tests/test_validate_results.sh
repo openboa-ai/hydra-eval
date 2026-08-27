@@ -133,6 +133,32 @@ squash_sha="$(
 HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
   "${source_root}/scripts/validate-results.sh" "${repository_base_revision}" "${squash_sha}"
 
+self_contained_job_id="00000000-0000-0000-0000-000000000013"
+self_contained_dir="${fixture_repo}/results/smoke/${self_contained_job_id}"
+cp -R "${result_dir}" "${self_contained_dir}"
+git -C "${fixture_repo}" bundle create \
+  "${self_contained_dir}/source/evaluation.bundle" HEAD
+self_contained_bundle_sha256="$(shasum -a 256 "${self_contained_dir}/source/evaluation.bundle" | awk '{print $1}')"
+self_contained_scorecard_tmp="${self_contained_dir}/scorecard.json.tmp"
+jq --arg job_id "${self_contained_job_id}" \
+  --arg revision "${base_sha}" \
+  --arg bundle_sha256 "${self_contained_bundle_sha256}" '
+  .job_id = $job_id
+  | .provenance.evaluation_revision = $revision
+  | .provenance.evidence_collector_revision = $revision
+  | .provenance.evaluation_base_revision = null
+  | .provenance.evaluation_bundle_sha256 = $bundle_sha256
+' "${self_contained_dir}/scorecard.json" > "${self_contained_scorecard_tmp}"
+mv "${self_contained_scorecard_tmp}" "${self_contained_dir}/scorecard.json"
+self_contained_job_tmp="${self_contained_dir}/harbor/job-result.json.tmp"
+jq --arg job_id "${self_contained_job_id}" '.id = $job_id' \
+  "${self_contained_dir}/harbor/job-result.json" > "${self_contained_job_tmp}"
+mv "${self_contained_job_tmp}" "${self_contained_dir}/harbor/job-result.json"
+write_smoke_checksums "${self_contained_dir}"
+HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD
+mv "${self_contained_dir}" "${fixture_repo}/self-contained-main-smoke-result"
+
 ln -s /etc/passwd "${result_dir}/leaked-artifact"
 if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
   "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then

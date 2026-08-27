@@ -324,6 +324,9 @@ def build_evidence(args: argparse.Namespace) -> Path:
     if result_dir.exists():
         raise EvidenceError(f"append-only result already exists: {result_dir}")
 
+    recorded_evaluation_base = (
+        None if args.evaluation_base_revision == "none" else args.evaluation_base_revision
+    )
     scorecard = {
         "kind": "evaluator_smoke",
         "status": "pass",
@@ -332,7 +335,7 @@ def build_evidence(args: argparse.Namespace) -> Path:
         "provenance": {
             "evaluation_revision": args.evaluation_revision,
             "evidence_collector_revision": args.evidence_collector_revision,
-            "evaluation_base_revision": args.evaluation_base_revision,
+            "evaluation_base_revision": recorded_evaluation_base,
             "evaluation_bundle_sha256": evaluation_bundle_sha256,
             "environment_image": args.environment_image,
             "task": trial_result.get("task_name"),
@@ -410,7 +413,7 @@ This record proves that the minimal Hydra Eval plumbing completed one Oracle ref
 
 - Evaluation revision: `{args.evaluation_revision}`
 - Evidence collector revision: `{args.evidence_collector_revision}`
-- Evaluation base revision: `{args.evaluation_base_revision}`
+- Evaluation base revision: `{recorded_evaluation_base or "none (self-contained bundle)"}`
 - Evaluation source bundle SHA-256: `{evaluation_bundle_sha256}`
 - Environment image: `{args.environment_image}`
 - Harbor job: `{job_id}`

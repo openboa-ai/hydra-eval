@@ -13,7 +13,7 @@ results/hydra/<version>/<result-id>/
 ├── scorecard.json     # required machine-readable identity and provenance
 ├── checksums.txt      # hashes for preserved artifacts
 ├── source/
-│   ├── evaluation.bundle  # evaluator source; exact recorded base is its prerequisite
+│   ├── evaluation.bundle  # evaluator source; delta with exact base, or self-contained
 │   └── hydra.bundle       # self-contained Hydra candidate source
 └── artifacts/         # sanitized Harbor-native evidence, when allowed
 ```
@@ -24,4 +24,4 @@ Each Hydra `scorecard.json` must state the Hydra version and revision, result ID
 
 Result bundles must contain regular files and directories only. Symlinks are rejected because their targets are outside the bundle checksum and can change independently. Before publication, Git bundle headers, prerequisites, advertised revisions, and every introduced Git object are inspected; this catches credentials left in deleted files as well as current files. Keep private inputs, credentials, sensitive traces, and holdout data outside this public repository.
 
-Smoke and Hydra results are append-only. CI compares the pull request base and head to reject any change or deletion inside an already published `results/smoke/<job-id>/` or `results/hydra/<version>/<result-id>/` directory, verifies that the recorded evaluation commit is recoverable from a checksummed Git bundle whose exact prerequisite equals the recorded base, requires a self-contained candidate bundle for Hydra results, cross-checks smoke solver and judge measures against preserved evidence, and verifies that each checksum manifest covers the exact public file set. A flawed result gets an invalidation record; it is not edited in place and not deleted merely because a later candidate is better.
+Smoke and Hydra results are append-only. CI compares the pull request base and head to reject any change or deletion inside an already published `results/smoke/<job-id>/` or `results/hydra/<version>/<result-id>/` directory, verifies that the recorded evaluation commit is recoverable from a checksummed Git bundle whose prerequisite equals the recorded base (or has no prerequisite when the base is `null`), requires a self-contained candidate bundle for Hydra results, cross-checks smoke solver and judge measures against preserved evidence, and verifies that each checksum manifest covers the exact public file set. A flawed result gets an invalidation record; it is not edited in place and not deleted merely because a later candidate is better.

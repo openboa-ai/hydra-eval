@@ -58,16 +58,21 @@ validate_evaluation_bundle() {
   local evaluation_base_revision="$4"
   local evaluation_bundle_sha256="$5"
   local bundle_path="${result_dir}/source/evaluation.bundle"
+  local expected_prerequisite="${evaluation_base_revision}"
 
   [[ -f "${bundle_path}" ]] || fail "missing source/evaluation.bundle in ${result_label}"
   [[ -x "${source_bundle_checker}" ]] || fail "missing executable source-bundle checker"
-  validate_local_revision "${evaluation_base_revision}" "evaluation base revision in ${result_label}"
+  if [[ "${evaluation_base_revision}" == "null" ]]; then
+    expected_prerequisite="none"
+  else
+    validate_local_revision "${evaluation_base_revision}" "evaluation base revision in ${result_label}"
+  fi
   [[ "$(shasum -a 256 "${bundle_path}" | awk '{print $1}')" == "${evaluation_bundle_sha256}" ]] \
     || fail "evaluation source bundle digest does not match the scorecard in ${result_label}"
   python3 "${source_bundle_checker}" \
     --bundle "${bundle_path}" \
     --revision "${evaluation_revision}" \
-    --expected-prerequisite "${evaluation_base_revision}" \
+    --expected-prerequisite "${expected_prerequisite}" \
     --repository "${repo_root}" >/dev/null \
     || fail "evaluation source bundle provenance or object safety failed in ${result_label}"
 }
@@ -139,7 +144,10 @@ validate_result() {
       and (.provenance.evaluation_revision | matches("^[0-9a-f]{40}$"))
       and (.provenance.evidence_collector_revision | matches("^[0-9a-f]{40}$"))
       and .provenance.evidence_collector_revision == .provenance.evaluation_revision
-      and (.provenance.evaluation_base_revision | matches("^[0-9a-f]{40}$"))
+      and (
+        .provenance.evaluation_base_revision == null
+        or (.provenance.evaluation_base_revision | matches("^[0-9a-f]{40}$"))
+      )
       and (.provenance.evaluation_bundle_sha256 | matches("^[0-9a-f]{64}$"))
       and (.provenance.environment_image | matches("@sha256:[0-9a-f]{64}$"))
       and (.provenance.task | nonempty)
@@ -285,7 +293,10 @@ PY
       and (.provenance.hydra_revision | matches("^[0-9a-f]{40}$"))
       and (.provenance.hydra_bundle_sha256 | matches("^[0-9a-f]{64}$"))
       and (.provenance.evaluation_revision | matches("^[0-9a-f]{40}$"))
-      and (.provenance.evaluation_base_revision | matches("^[0-9a-f]{40}$"))
+      and (
+        .provenance.evaluation_base_revision == null
+        or (.provenance.evaluation_base_revision | matches("^[0-9a-f]{40}$"))
+      )
       and (.provenance.evaluation_bundle_sha256 | matches("^[0-9a-f]{64}$"))
       and (.provenance.task | nonempty)
       and (.provenance.client.name | nonempty)

@@ -117,7 +117,8 @@ jobs:
         run: |
           ! find . -type f -not -path './.git/*' -not -path './.github/*' -size +2M -print -quit | grep -q .
           ! git grep -n -E 'sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}' -- .
-          ! git grep -n -E 'AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{20,}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----' -- results
+          ! git grep -n -E 'AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{20,}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----' -- .
+          ! git grep -n -E '"(access|refresh|id)[_-]?token"[[:space:]]*:[[:space:]]*"[A-Za-z0-9._~-]{16,}|(ACCESS|REFRESH|ID)_TOKEN[[:space:]]*=[[:space:]]*[A-Za-z0-9._~-]{16,}' -- .
           ! git grep -n -E 'access[_-]?token|refresh[_-]?token|id[_-]?token' -- results
           ! git grep -n -E 'file:///Users/|/Users/[^/[:space:]]+|file:///home/|/home/[^/[:space:]]+' -- results
           ! git grep -n -E '<recommended_plugins>|<skills_instructions>|"thread_id"' -- results

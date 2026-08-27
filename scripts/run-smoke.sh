@@ -214,11 +214,14 @@ export DOCKER_DEFAULT_PLATFORM="${container_platform}"
 
 evaluation_revision="$(git -C "${repo_root}" rev-parse HEAD)"
 evaluation_base_revision="$(git -C "${repo_root}" merge-base HEAD origin/main)"
-[[ "${evaluation_base_revision}" != "${evaluation_revision}" ]] \
-  || fail "evaluation revision must contain changes beyond origin/main"
 evaluation_source_bundle="$(mktemp /tmp/hydra-eval-source-bundle.XXXXXX)"
-git -C "${repo_root}" bundle create "${evaluation_source_bundle}" \
-  HEAD "^${evaluation_base_revision}"
+if [[ "${evaluation_base_revision}" == "${evaluation_revision}" ]]; then
+  evaluation_base_revision="none"
+  git -C "${repo_root}" bundle create "${evaluation_source_bundle}" HEAD
+else
+  git -C "${repo_root}" bundle create "${evaluation_source_bundle}" \
+    HEAD "^${evaluation_base_revision}"
+fi
 git -C "${repo_root}" bundle verify "${evaluation_source_bundle}" >/dev/null
 git -C "${repo_root}" bundle list-heads "${evaluation_source_bundle}" \
   | awk -v revision="${evaluation_revision}" '$1 == revision && $2 == "HEAD" { found = 1 } END { exit !found }' \
