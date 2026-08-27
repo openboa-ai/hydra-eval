@@ -1,0 +1,318 @@
+import importlib.util
+import hashlib
+import json
+import tempfile
+import types
+import unittest
+from pathlib import Path
+
+
+MODULE_PATH = Path(__file__).parents[1] / "scripts" / "collect_smoke.py"
+SPEC = importlib.util.spec_from_file_location("collect_smoke", MODULE_PATH)
+assert SPEC and SPEC.loader
+collect_smoke = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(collect_smoke)
+
+
+def write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value) + "\n")
+
+
+class CollectSmokeTest(unittest.TestCase):
+    def make_job(self, root: Path, name: str, agent: str, job_id: str) -> Path:
+        job_dir = root / name
+        trial_dir = job_dir / "trial-1"
+        rewards = {"answer_exact": 1, "reward": 1}
+        trial_result = {
+            "id": "trial-id",
+            "trial_uri": "file:///Users/example/private/trial",
+            "trial_name": "trial-1",
+            "task_name": "openboa/hydra-eval-smoke-question-answer",
+            "task_checksum": "task-checksum",
+            "agent_info": {
+                "name": agent,
+                "version": "0.147.0" if agent == "codex" else "1.0.0",
+                "model_info": {"name": "openai/gpt-5.6-luna"} if agent == "codex" else None,
+            },
+            "exception_info": None,
+            "verifier_result": {"rewards": rewards},
+            "started_at": "2026-08-27T00:00:00Z",
+            "finished_at": "2026-08-27T00:00:02Z",
+        }
+        job_result = {
+            "id": job_id,
+            "stats": {
+                "n_completed_trials": 1,
+                "n_errored_trials": 0,
+                "n_input_tokens": 100,
+                "n_cache_tokens": 10,
+                "n_output_tokens": 20,
+                "cost_usd": 0.001,
+            },
+        }
+        write_json(job_dir / "result.json", job_result)
+        write_json(trial_dir / "config.json", {"task": "smoke-question-answer"})
+        write_json(trial_dir / "result.json", trial_result)
+        write_json(trial_dir / "verifier" / "reward.json", rewards)
+        write_json(
+            trial_dir / "agent" / "trajectory.json",
+            {
+                "schema_version": "ATIF-v1.7",
+                "session_id": "private-session-id",
+                "agent": {
+                    "name": "codex",
+                    "version": "0.147.0",
+                    "model_name": "gpt-5.6-luna",
+                },
+                "final_metrics": {"total_prompt_tokens": 100},
+                "steps": [
+                    {"source": "system", "message": "private-system-context"},
+                    {
+                        "source": "user",
+                        "message": "<recommended_plugins>ambient catalog</recommended_plugins>",
+                    },
+                    {"source": "user", "message": "What is 19 + 23?"},
+                    {
+                        "source": "agent",
+                        "message": "Writing the answer.",
+                        "tool_calls": [
+                            {
+                                "tool_call_id": "private-call-id",
+                                "function_name": "exec",
+                                "arguments": {"input": "write 42"},
+                            }
+                        ],
+                    },
+                ],
+            },
+        )
+        answer = trial_dir / "artifacts" / "app" / "answer.txt"
+        answer.parent.mkdir(parents=True, exist_ok=True)
+        answer.write_text("42\n")
+        return job_dir
+
+    def test_builds_append_only_sanitized_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            oracle = self.make_job(
+                root, "oracle", "oracle", "00000000-0000-0000-0000-000000000001"
+            )
+            codex = self.make_job(
+                root, "codex", "codex", "00000000-0000-0000-0000-000000000002"
+            )
+            judge_result = root / "judge-result.json"
+            judge_events = root / "judge-events.jsonl"
+            write_json(
+                judge_result,
+                {"verdict": "pass", "score": 1, "reason": "The answer is 42."},
+            )
+            judge_events.write_text(
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {"input_tokens": 30, "output_tokens": 8},
+                    }
+                )
+                + "\n"
+            )
+            evaluation_source_bundle = root / "evaluation.bundle"
+            evaluation_source_bundle.write_bytes(b"test evaluation bundle")
+            args = types.SimpleNamespace(
+                oracle_job_dir=oracle,
+                job_dir=codex,
+                judge_result=judge_result,
+                judge_events=judge_events,
+                results_root=root / "results",
+                evaluation_revision="a" * 40,
+                evidence_collector_revision="c" * 40,
+                evaluation_base_revision="0" * 40,
+                evaluation_source_bundle=evaluation_source_bundle,
+                environment_image="ubuntu:24.04@sha256:" + "e" * 64,
+                harbor_version="0.22.0",
+                harbor_python_version="3.12.11",
+                harbor_constraints_sha256="1" * 64,
+                uv_version="0.8.3",
+                host_os="darwin",
+                host_architecture="arm64",
+                harbor_python_platform="macosx-11.0-arm64",
+                container_platform="linux/arm64/v8",
+                environment_manifest_digest="sha256:" + "2" * 64,
+                solver_agent_version="0.147.0",
+                solver_model="gpt-5.6-luna",
+                solver_reasoning="low",
+                judge_model="gpt-5.6-luna",
+                judge_reasoning="low",
+                judge_agent_version="0.144.5",
+                judge_elapsed_seconds=1.5,
+            )
+
+            result_dir = collect_smoke.build_evidence(args)
+            scorecard = json.loads((result_dir / "scorecard.json").read_text())
+            self.assertEqual(scorecard["status"], "pass")
+            self.assertEqual(scorecard["provenance"]["solver_reasoning"], "low")
+            self.assertEqual(scorecard["provenance"]["judge_agent_version"], "0.144.5")
+            self.assertEqual(
+                scorecard["provenance"]["evidence_collector_revision"], "c" * 40
+            )
+            self.assertEqual(scorecard["provenance"]["evaluation_base_revision"], "0" * 40)
+            self.assertEqual(
+                scorecard["provenance"]["evaluation_bundle_sha256"],
+                hashlib.sha256(b"test evaluation bundle").hexdigest(),
+            )
+            self.assertEqual(
+                scorecard["provenance"]["environment_image"],
+                "ubuntu:24.04@sha256:" + "e" * 64,
+            )
+            self.assertEqual(scorecard["provenance"]["harbor_python_version"], "3.12.11")
+            self.assertEqual(
+                scorecard["provenance"]["harbor_constraints_sha256"], "1" * 64
+            )
+            self.assertEqual(scorecard["provenance"]["uv_version"], "0.8.3")
+            self.assertEqual(
+                scorecard["provenance"]["host_runtime"],
+                {
+                    "architecture": "arm64",
+                    "os": "darwin",
+                    "python_platform": "macosx-11.0-arm64",
+                },
+            )
+            self.assertEqual(
+                scorecard["provenance"]["container_runtime"],
+                {
+                    "base_manifest_digest": "sha256:" + "2" * 64,
+                    "platform": "linux/arm64/v8",
+                },
+            )
+            self.assertEqual(scorecard["measures"]["judge"]["input_tokens"], 30)
+            self.assertTrue((result_dir / "harbor" / "trajectory.json").is_file())
+            self.assertTrue((result_dir / "harbor" / "oracle-trial-result.json").is_file())
+            self.assertTrue((result_dir / "judge" / "metrics.json").is_file())
+            self.assertEqual(
+                json.loads((result_dir / "judge" / "metrics.json").read_text()),
+                scorecard["measures"]["judge"],
+            )
+            self.assertTrue((result_dir / "source" / "evaluation.bundle").is_file())
+            public_files = "\n".join(
+                path.read_text(errors="ignore")
+                for path in result_dir.rglob("*")
+                if path.is_file()
+            )
+            self.assertNotIn("/Users/", public_files)
+            self.assertNotIn("private-system-context", public_files)
+            self.assertNotIn("recommended_plugins", public_files)
+            self.assertNotIn("private-session-id", public_files)
+            self.assertFalse((result_dir / "judge" / "events.jsonl").exists())
+            self.assertTrue((result_dir / "checksums.txt").is_file())
+
+            with self.assertRaises(collect_smoke.EvidenceError):
+                collect_smoke.build_evidence(args)
+
+    def test_rejects_mismatched_oracle_task(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            oracle = self.make_job(
+                root, "oracle", "oracle", "00000000-0000-0000-0000-000000000005"
+            )
+            codex = self.make_job(
+                root, "codex", "codex", "00000000-0000-0000-0000-000000000006"
+            )
+            oracle_trial = oracle / "trial-1" / "result.json"
+            oracle_result = json.loads(oracle_trial.read_text())
+            oracle_result["task_checksum"] = "different-task-checksum"
+            write_json(oracle_trial, oracle_result)
+            judge_result = root / "judge-result.json"
+            judge_events = root / "judge-events.jsonl"
+            write_json(
+                judge_result,
+                {"verdict": "pass", "score": 1, "reason": "The answer is 42."},
+            )
+            judge_events.write_text(
+                json.dumps({"usage": {"input_tokens": 1, "output_tokens": 1}}) + "\n"
+            )
+            evaluation_source_bundle = root / "evaluation.bundle"
+            evaluation_source_bundle.write_bytes(b"test evaluation bundle")
+            args = types.SimpleNamespace(
+                oracle_job_dir=oracle,
+                job_dir=codex,
+                judge_result=judge_result,
+                judge_events=judge_events,
+                results_root=root / "results",
+                evaluation_revision="e" * 40,
+                evidence_collector_revision="f" * 40,
+                evaluation_base_revision="0" * 40,
+                evaluation_source_bundle=evaluation_source_bundle,
+                environment_image="ubuntu:24.04@sha256:" + "e" * 64,
+                harbor_version="0.22.0",
+                harbor_python_version="3.12.11",
+                harbor_constraints_sha256="1" * 64,
+                uv_version="0.8.3",
+                host_os="darwin",
+                host_architecture="arm64",
+                harbor_python_platform="macosx-11.0-arm64",
+                container_platform="linux/arm64/v8",
+                environment_manifest_digest="sha256:" + "2" * 64,
+                solver_agent_version="0.147.0",
+                solver_model="gpt-5.6-luna",
+                solver_reasoning="low",
+                judge_model="gpt-5.6-luna",
+                judge_reasoning="low",
+                judge_agent_version="0.144.5",
+                judge_elapsed_seconds=1.0,
+            )
+
+            with self.assertRaises(collect_smoke.EvidenceError):
+                collect_smoke.build_evidence(args)
+
+    def test_rejects_failed_judge(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            oracle = self.make_job(
+                root, "oracle", "oracle", "00000000-0000-0000-0000-000000000003"
+            )
+            codex = self.make_job(
+                root, "codex", "codex", "00000000-0000-0000-0000-000000000004"
+            )
+            judge_result = root / "judge-result.json"
+            judge_events = root / "judge-events.jsonl"
+            write_json(judge_result, {"verdict": "fail", "score": 0, "reason": "No."})
+            judge_events.write_text(
+                json.dumps({"usage": {"input_tokens": 1, "output_tokens": 1}}) + "\n"
+            )
+            evaluation_source_bundle = root / "evaluation.bundle"
+            evaluation_source_bundle.write_bytes(b"test evaluation bundle")
+            args = types.SimpleNamespace(
+                oracle_job_dir=oracle,
+                job_dir=codex,
+                judge_result=judge_result,
+                judge_events=judge_events,
+                results_root=root / "results",
+                evaluation_revision="b" * 40,
+                evidence_collector_revision="d" * 40,
+                evaluation_base_revision="0" * 40,
+                evaluation_source_bundle=evaluation_source_bundle,
+                environment_image="ubuntu:24.04@sha256:" + "e" * 64,
+                harbor_version="0.22.0",
+                harbor_python_version="3.12.11",
+                harbor_constraints_sha256="1" * 64,
+                uv_version="0.8.3",
+                host_os="darwin",
+                host_architecture="arm64",
+                harbor_python_platform="macosx-11.0-arm64",
+                container_platform="linux/arm64/v8",
+                environment_manifest_digest="sha256:" + "2" * 64,
+                solver_agent_version="0.147.0",
+                solver_model="gpt-5.6-luna",
+                solver_reasoning="low",
+                judge_model="gpt-5.6-luna",
+                judge_reasoning="low",
+                judge_agent_version="0.144.5",
+                judge_elapsed_seconds=1.0,
+            )
+
+            with self.assertRaises(collect_smoke.EvidenceError):
+                collect_smoke.build_evidence(args)
+
+
+if __name__ == "__main__":
+    unittest.main()

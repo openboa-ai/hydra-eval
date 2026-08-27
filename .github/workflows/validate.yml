@@ -13,36 +13,110 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  evaluation-structure:
-    name: evaluation-structure
+  static-validation:
+    name: static-validation
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Check out candidate
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - name: Check foundation layout
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Check evaluator layout and syntax
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
+          test "$(cat VERSION)" = "0.1.0"
           test -f README.md
           test -f EVALUATION.md
           test -f tasks/README.md
           test -f results/README.md
+          test -f tasks/smoke-question-answer/task.toml
+          test -f tasks/smoke-question-answer/environment/Dockerfile
+          test -x tasks/smoke-question-answer/tests/test.sh
+          test -x tasks/smoke-question-answer/solution/solve.sh
+          test -x scripts/run-smoke.sh
+          test -x scripts/collect_smoke.py
+          test -x scripts/validate-results.sh
+          test -x tests/test_validate_results.sh
+          test -f judges/smoke-question-answer.schema.json
+          test -f config/harbor-0.22.0.constraints
+          grep -q '^harbor==0.22.0$' config/harbor-0.22.0.constraints
           test ! -e evals.json
           test ! -e grader.py
           test ! -e runner.py
           test ! -e jobs
+          bash -n scripts/run-smoke.sh
+          bash -n scripts/validate-results.sh
+          bash -n tests/test_validate_results.sh
+          bash -n tasks/smoke-question-answer/tests/test.sh
+          bash -n tasks/smoke-question-answer/solution/solve.sh
+          grep -Eq '^FROM ubuntu:24\.04@sha256:[0-9a-f]{64}$' tasks/smoke-question-answer/environment/Dockerfile
+          untracked_probe=tasks/smoke-question-answer/environment/.untracked-eval-input
+          touch "$untracked_probe"
+          if scripts/run-smoke.sh >/tmp/hydra-eval-untracked-preflight.txt 2>&1; then
+            echo 'runner accepted an untracked evaluation input' >&2
+            exit 1
+          fi
+          grep -q 'commit or remove tracked and untracked files' /tmp/hydra-eval-untracked-preflight.txt
+          rm "$untracked_probe"
+          python3 -m json.tool judges/smoke-question-answer.schema.json >/dev/null
           if git rev-parse --verify "$BASE_SHA^{commit}" >/dev/null 2>&1; then
             git diff --check "$BASE_SHA" "$HEAD_SHA"
           else
             git diff --check HEAD^ HEAD
           fi
+      - name: Parse the Harbor task without running an agent
+        run: |
+          uvx --python 3.12.11 \
+            --constraints config/harbor-0.22.0.constraints \
+            --from 'harbor==0.22.0' harbor run \
+            --path tasks/smoke-question-answer \
+            --agent oracle \
+            --print-config > /tmp/hydra-eval-harbor-config.json
+          python3 -m json.tool /tmp/hydra-eval-harbor-config.json >/dev/null
+      - name: Check deterministic verifier and evidence collector
+        run: |
+          fixture_dir="$(mktemp -d /tmp/hydra-eval-verifier.XXXXXX)"
+          printf '%s\n' 42 > "$fixture_dir/answer.txt"
+          HYDRA_EVAL_ANSWER_PATH="$fixture_dir/answer.txt" \
+            HYDRA_EVAL_REWARD_DIR="$fixture_dir/pass" \
+            tasks/smoke-question-answer/tests/test.sh
+          jq -e '.answer_exact == 1 and .reward == 1' "$fixture_dir/pass/reward.json"
+          printf '%s\n' 41 > "$fixture_dir/answer.txt"
+          HYDRA_EVAL_ANSWER_PATH="$fixture_dir/answer.txt" \
+          HYDRA_EVAL_REWARD_DIR="$fixture_dir/fail" \
+            tasks/smoke-question-answer/tests/test.sh
+          jq -e '.answer_exact == 0 and .reward == 0' "$fixture_dir/fail/reward.json"
+          printf '42  \n' > "$fixture_dir/answer.txt"
+          HYDRA_EVAL_ANSWER_PATH="$fixture_dir/answer.txt" \
+            HYDRA_EVAL_REWARD_DIR="$fixture_dir/trailing-space" \
+            tasks/smoke-question-answer/tests/test.sh
+          jq -e '.answer_exact == 0 and .reward == 0' "$fixture_dir/trailing-space/reward.json"
+          printf '4 2\n' > "$fixture_dir/answer.txt"
+          HYDRA_EVAL_ANSWER_PATH="$fixture_dir/answer.txt" \
+            HYDRA_EVAL_REWARD_DIR="$fixture_dir/internal-space" \
+            tasks/smoke-question-answer/tests/test.sh
+          jq -e '.answer_exact == 0 and .reward == 0' "$fixture_dir/internal-space/reward.json"
+          printf '42' > "$fixture_dir/answer.txt"
+          HYDRA_EVAL_ANSWER_PATH="$fixture_dir/answer.txt" \
+            HYDRA_EVAL_REWARD_DIR="$fixture_dir/missing-newline" \
+            tasks/smoke-question-answer/tests/test.sh
+          jq -e '.answer_exact == 0 and .reward == 0' "$fixture_dir/missing-newline/reward.json"
+          python3 -m unittest discover -s tests -v
+          tests/test_validate_results.sh
       - name: Check public evidence hygiene
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           ! find . -type f -not -path './.git/*' -not -path './.github/*' -size +2M -print -quit | grep -q .
-          # Scan every tracked file so hidden files and force-added ignored
-          # evidence cannot bypass the public repository credential check.
           ! git grep -n -E 'sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}' -- .
+          ! git grep -n -E 'access[_-]?token|refresh[_-]?token|id[_-]?token' -- results
+          ! git grep -n -E 'file:///Users/|/Users/[^/[:space:]]+|file:///home/|/home/[^/[:space:]]+' -- results
+          ! git grep -n -E '<recommended_plugins>|<skills_instructions>|"thread_id"' -- results
+          ! git ls-files 'jobs/**' | grep -q .
+          scripts/validate-results.sh "$BASE_SHA" "$HEAD_SHA"
