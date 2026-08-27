@@ -227,6 +227,8 @@ def check_evaluation_bundle(args: argparse.Namespace, task_checksum: str) -> Non
             ),
             "--expected-task-checksum",
             f"tasks/smoke-question-answer={task_checksum}",
+            "--expected-constraint",
+            f"config/harbor-0.22.0.constraints:harbor={args.harbor_version}",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

@@ -288,6 +288,47 @@ def check_expected_task_checksums(
             )
 
 
+def check_expected_constraints(
+    repository: Path,
+    revision: str,
+    expected_constraints: dict[tuple[str, str], str],
+) -> None:
+    for (source_path, package), expected_version in sorted(
+        expected_constraints.items()
+    ):
+        if (
+            not re.fullmatch(r"[A-Za-z0-9._/-]+", source_path)
+            or source_path.startswith("/")
+            or ".." in Path(source_path).parts
+            or not re.fullmatch(r"[A-Za-z0-9._-]+", package)
+            or not re.fullmatch(r"[A-Za-z0-9.!+_-]+", expected_version)
+        ):
+            raise BundleError(
+                f"invalid expected constraint {source_path}:{package}={expected_version}"
+            )
+        content = run_git(
+            ["show", f"{revision}:{source_path}"], repository=repository
+        )
+        try:
+            lines = content.decode("utf-8", errors="strict").splitlines()
+        except UnicodeDecodeError as exc:
+            raise BundleError(f"bundled {source_path} is not UTF-8") from exc
+        versions = []
+        constraint_pattern = re.compile(
+            rf"^{re.escape(package)}==([A-Za-z0-9.!+_-]+)(?:\s*;.*)?$",
+            re.IGNORECASE,
+        )
+        for line in lines:
+            match = constraint_pattern.fullmatch(line.strip())
+            if match:
+                versions.append(match.group(1))
+        if versions != [expected_version]:
+            raise BundleError(
+                f"bundled {source_path} must pin {package}=={expected_version} exactly once; "
+                f"found {versions}"
+            )
+
+
 def check_bundle(
     bundle: Path,
     revision: str,
@@ -296,6 +337,7 @@ def check_bundle(
     expected_files: dict[str, str] | None = None,
     expected_docker_images: dict[str, str] | None = None,
     expected_task_checksums: dict[str, str] | None = None,
+    expected_constraints: dict[tuple[str, str], str] | None = None,
 ) -> dict[str, object]:
     if not bundle.is_file():
         raise BundleError(f"bundle does not exist: {bundle}")
@@ -377,6 +419,11 @@ def check_bundle(
             revision,
             expected_task_checksums if expected_task_checksums is not None else {},
         )
+        check_expected_constraints(
+            inspection_repo,
+            revision,
+            expected_constraints if expected_constraints is not None else {},
+        )
 
     return {
         "revision": revision,
@@ -387,6 +434,10 @@ def check_bundle(
         "verified_task_checksums": dict(
             sorted((expected_task_checksums or {}).items())
         ),
+        "verified_constraints": {
+            f"{path}:{package}": version
+            for (path, package), version in sorted((expected_constraints or {}).items())
+        },
     }
 
 
@@ -417,6 +468,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="append",
         default=[],
         metavar="PATH=CHECKSUM",
+    )
+    parser.add_argument(
+        "--expected-constraint",
+        action="append",
+        default=[],
+        metavar="PATH:PACKAGE=VERSION",
     )
     return parser.parse_args(argv)
 
@@ -460,6 +517,24 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         expected_task_checksums[source_path] = checksum
+    expected_constraints: dict[tuple[str, str], str] = {}
+    for item in args.expected_constraint:
+        source_and_package, separator, version = item.rpartition("=")
+        source_path, package_separator, package = source_and_package.rpartition(":")
+        key = (source_path, package)
+        if (
+            not separator
+            or not package_separator
+            or not source_path
+            or not package
+            or key in expected_constraints
+        ):
+            print(
+                f"check-source-bundle: invalid or duplicate expected constraint: {item!r}",
+                file=sys.stderr,
+            )
+            return 1
+        expected_constraints[key] = version
     try:
         result = check_bundle(
             args.bundle,
@@ -469,6 +544,7 @@ def main(argv: list[str] | None = None) -> int:
             expected_files,
             expected_docker_images,
             expected_task_checksums,
+            expected_constraints,
         )
     except BundleError as exc:
         print(f"check-source-bundle: {exc}", file=sys.stderr)

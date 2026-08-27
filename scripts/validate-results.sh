@@ -60,6 +60,7 @@ validate_evaluation_bundle() {
   local expected_file_sha256="${6:-}"
   local expected_docker_image="${7:-}"
   local expected_task_checksum="${8:-}"
+  local expected_constraint="${9:-}"
   local bundle_path="${result_dir}/source/evaluation.bundle"
   local expected_prerequisite="${evaluation_base_revision}"
   local checker_args=()
@@ -88,6 +89,9 @@ validate_evaluation_bundle() {
   fi
   if [[ -n "${expected_task_checksum}" ]]; then
     checker_args+=(--expected-task-checksum "${expected_task_checksum}")
+  fi
+  if [[ -n "${expected_constraint}" ]]; then
+    checker_args+=(--expected-constraint "${expected_constraint}")
   fi
   python3 "${checker_args[@]}" >/dev/null \
     || fail "evaluation source bundle provenance or object safety failed in ${result_label}"
@@ -224,7 +228,8 @@ validate_result() {
       "${evaluation_revision}" "${evaluation_base_revision}" "${evaluation_bundle_sha256}" \
       "config/harbor-0.22.0.constraints=${harbor_constraints_sha256}" \
       "tasks/smoke-question-answer/environment/Dockerfile=${environment_image}" \
-      "tasks/smoke-question-answer=$(jq -r '.provenance.task_checksum' "${result_dir}/scorecard.json")"
+      "tasks/smoke-question-answer=$(jq -r '.provenance.task_checksum' "${result_dir}/scorecard.json")" \
+      "config/harbor-0.22.0.constraints:harbor=$(jq -r '.provenance.harbor_version' "${result_dir}/scorecard.json")"
     cmp -s "${result_dir}/harbor/answer.txt" <(printf '42\n') \
       || fail "answer is not exactly 42 followed by newline in ${result_label}"
     jq -e --slurpfile scorecard "${result_dir}/scorecard.json" '
@@ -397,6 +402,13 @@ PY
       || fail "missing source/evaluation.bundle in ${result_label}"
     [[ -f "${result_dir}/source/hydra.bundle" ]] \
       || fail "missing source/hydra.bundle in ${result_label}"
+    for required_file in \
+      artifacts/job-result.json \
+      artifacts/trial-lock.json \
+      artifacts/trial-result.json; do
+      [[ -f "${result_dir}/${required_file}" ]] \
+        || fail "missing ${required_file} in ${result_label}"
+    done
     hydra_version="$(basename "$(dirname "${result_dir}")")"
     jq -e --arg hydra_version "${hydra_version}" --arg result_id "${result_id}" '
       def matches($pattern): type == "string" and test($pattern);
@@ -515,6 +527,45 @@ PY
       ' "${result_dir}/${assertion_evidence}" >/dev/null \
         || fail "Hydra assertion evidence disagrees with the scorecard for ${assertion_evidence} in ${result_label}"
     done < <(jq -r '.assertions[].evidence' "${result_dir}/scorecard.json")
+    jq -e --slurpfile scorecard "${result_dir}/scorecard.json" '
+      .id == $scorecard[0].provenance.job_id
+      and (.stats | type == "object")
+      and (.stats.n_completed_trials | type == "number" and floor == . and . >= 0)
+      and (.stats.n_errored_trials | type == "number" and floor == . and . >= 0)
+      and (
+        if $scorecard[0].status == "pass"
+        then .stats.n_completed_trials >= 1 and .stats.n_errored_trials == 0
+        else true
+        end
+      )
+    ' "${result_dir}/artifacts/job-result.json" >/dev/null \
+      || fail "Hydra job result does not match execution provenance in ${result_label}"
+    jq -e --slurpfile scorecard "${result_dir}/scorecard.json" '
+      .config.job_id == $scorecard[0].provenance.job_id
+      and .agent_info.name == $scorecard[0].provenance.client.name
+      and .agent_info.version == $scorecard[0].provenance.client.version
+      and .agent_info.model_info.name == $scorecard[0].provenance.model.name
+      and (
+        if $scorecard[0].status == "pass"
+        then .exception_info == null
+        else true
+        end
+      )
+    ' "${result_dir}/artifacts/trial-result.json" >/dev/null \
+      || fail "Hydra trial result does not match execution provenance in ${result_label}"
+    jq -e --slurpfile scorecard "${result_dir}/scorecard.json" '
+      def nonempty: type == "string" and test("\\S");
+      ($scorecard[0].provenance.model.name) as $model
+      | .task.digest == $scorecard[0].provenance.environment.fingerprint
+      and .agent.name == $scorecard[0].provenance.client.name
+      and .agent.kwargs.version == $scorecard[0].provenance.client.version
+      and (
+        .agent.model_name == $model
+        or (.agent.model_name | endswith("/" + $model))
+      )
+      and (.environment.type | nonempty)
+    ' "${result_dir}/artifacts/trial-lock.json" >/dev/null \
+      || fail "Hydra trial lock does not match execution provenance in ${result_label}"
     evaluation_revision="$(jq -r '.provenance.evaluation_revision' "${result_dir}/scorecard.json")"
     evaluation_base_revision="$(jq -r '.provenance.evaluation_base_revision' "${result_dir}/scorecard.json")"
     evaluation_bundle_sha256="$(jq -r '.provenance.evaluation_bundle_sha256' "${result_dir}/scorecard.json")"

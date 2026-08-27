@@ -91,7 +91,10 @@ write_hydra_checksums() {
     cd "${directory}"
     for path in \
       README.md \
+      artifacts/job-result.json \
       artifacts/output.txt \
+      artifacts/trial-lock.json \
+      artifacts/trial-result.json \
       artifacts/verifier.json \
       scorecard.json \
       source/evaluation.bundle \
@@ -169,6 +172,12 @@ jq --arg revision "${evaluation_revision}" \
 mv "${hydra_scorecard_tmp}" "${hydra_result_dir}/scorecard.json"
 printf '%s\n' 'artifact' > "${hydra_result_dir}/artifacts/output.txt"
 printf '%s\n' '{"passed":true,"name":"expected-output"}' > "${hydra_result_dir}/artifacts/verifier.json"
+printf '%s\n' '{"id":"harbor-job","stats":{"n_completed_trials":1,"n_errored_trials":0}}' \
+  > "${hydra_result_dir}/artifacts/job-result.json"
+printf '%s\n' '{"config":{"job_id":"harbor-job"},"agent_info":{"name":"codex","version":"0.147.0","model_info":{"name":"gpt-5.6-luna"}},"exception_info":null}' \
+  > "${hydra_result_dir}/artifacts/trial-result.json"
+printf '%s\n' '{"task":{"digest":"sha256:environment"},"agent":{"name":"codex","model_name":"openai/gpt-5.6-luna","kwargs":{"version":"0.147.0"}},"environment":{"type":"docker"}}' \
+  > "${hydra_result_dir}/artifacts/trial-lock.json"
 write_hydra_checksums "${hydra_result_dir}"
 
 git -C "${fixture_repo}" add results
@@ -315,6 +324,27 @@ if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
   exit 1
 fi
 mv "${wrong_constraints_dir}" "${fixture_repo}/wrong-constraints-smoke-result"
+
+wrong_harbor_version_job_id="00000000-0000-0000-0000-000000000026"
+wrong_harbor_version_dir="${fixture_repo}/results/smoke/${wrong_harbor_version_job_id}"
+cp -R "${result_dir}" "${wrong_harbor_version_dir}"
+wrong_harbor_version_scorecard_tmp="${wrong_harbor_version_dir}/scorecard.json.tmp"
+jq --arg job_id "${wrong_harbor_version_job_id}" '
+  .job_id = $job_id
+  | .provenance.harbor_version = "9.9.9"
+' "${wrong_harbor_version_dir}/scorecard.json" > "${wrong_harbor_version_scorecard_tmp}"
+mv "${wrong_harbor_version_scorecard_tmp}" "${wrong_harbor_version_dir}/scorecard.json"
+wrong_harbor_version_job_tmp="${wrong_harbor_version_dir}/harbor/job-result.json.tmp"
+jq --arg job_id "${wrong_harbor_version_job_id}" '.id = $job_id' \
+  "${wrong_harbor_version_dir}/harbor/job-result.json" > "${wrong_harbor_version_job_tmp}"
+mv "${wrong_harbor_version_job_tmp}" "${wrong_harbor_version_dir}/harbor/job-result.json"
+write_smoke_checksums "${wrong_harbor_version_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: Harbor version diverging from bundled constraints was accepted' >&2
+  exit 1
+fi
+mv "${wrong_harbor_version_dir}" "${fixture_repo}/wrong-harbor-version-smoke-result"
 
 wrong_task_job_id="00000000-0000-0000-0000-000000000021"
 wrong_task_dir="${fixture_repo}/results/smoke/${wrong_task_job_id}"
@@ -545,6 +575,26 @@ if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
   exit 1
 fi
 mv "${wrong_hydra_dir}" "${fixture_repo}/wrong-hydra-revision-result"
+
+wrong_execution_result_id="00000000-0000-0000-0000-000000000027"
+wrong_execution_dir="${fixture_repo}/results/hydra/0.1.0/${wrong_execution_result_id}"
+cp -R "${hydra_result_dir}" "${wrong_execution_dir}"
+wrong_execution_scorecard_tmp="${wrong_execution_dir}/scorecard.json.tmp"
+jq --arg result_id "${wrong_execution_result_id}" '
+  .result_id = $result_id
+  | .provenance.client = {name: "other-client", version: "9.9.9"}
+  | .provenance.model.name = "different-model"
+  | .provenance.environment.fingerprint = "sha256:different-environment"
+  | .provenance.job_id = "different-job"
+' "${wrong_execution_dir}/scorecard.json" > "${wrong_execution_scorecard_tmp}"
+mv "${wrong_execution_scorecard_tmp}" "${wrong_execution_dir}/scorecard.json"
+write_hydra_checksums "${wrong_execution_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: Hydra execution provenance diverging from native evidence was accepted' >&2
+  exit 1
+fi
+mv "${wrong_execution_dir}" "${fixture_repo}/wrong-hydra-execution-result"
 
 unsupported_pass_result_id="00000000-0000-0000-0000-000000000012"
 unsupported_pass_dir="${fixture_repo}/results/hydra/0.1.0/${unsupported_pass_result_id}"

@@ -214,6 +214,7 @@ python3 "${source_bundle_checker}" \
   --expected-prerequisite "${evaluation_base_revision}" \
   --repository "${repo_root}" \
   --expected-file-sha256 "config/harbor-0.22.0.constraints=${harbor_constraints_sha256}" \
+  --expected-constraint "config/harbor-0.22.0.constraints:harbor=${HARBOR_VERSION}" \
   --expected-docker-image "tasks/smoke-question-answer/environment/Dockerfile=${environment_image}" >/dev/null \
   || fail "evaluation source bundle failed object-level safety and provenance checks"
 run_id="$(date -u +%Y%m%dT%H%M%SZ)-${evaluation_revision:0:12}"

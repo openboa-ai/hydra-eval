@@ -44,6 +44,7 @@ class SourceBundleTest(unittest.TestCase):
             root = Path(temporary)
             repository, base_revision = self.make_repository(root)
             (repository / "evaluator.txt").write_text("safe evaluator\n")
+            (repository / "constraints.txt").write_text("harbor==0.22.0\n")
             dockerfile = repository / "tasks" / "smoke" / "environment" / "Dockerfile"
             dockerfile.parent.mkdir(parents=True)
             expected_image = "ubuntu:24.04@sha256:" + "a" * 64
@@ -52,6 +53,7 @@ class SourceBundleTest(unittest.TestCase):
                 repository,
                 "add",
                 "evaluator.txt",
+                "constraints.txt",
                 str(dockerfile.relative_to(repository)),
             )
             self.git(repository, "commit", "--quiet", "-m", "evaluator")
@@ -78,6 +80,7 @@ class SourceBundleTest(unittest.TestCase):
                 {"evaluator.txt": evaluator_sha256},
                 {"tasks/smoke/environment/Dockerfile": expected_image},
                 {"tasks/smoke": task_checksum},
+                {("constraints.txt", "harbor"): "0.22.0"},
             )
             self.assertEqual(result["revision"], evaluation_revision)
             self.assertEqual(result["prerequisite"], base_revision)
@@ -90,6 +93,10 @@ class SourceBundleTest(unittest.TestCase):
             self.assertEqual(
                 result["verified_task_checksums"],
                 {"tasks/smoke": task_checksum},
+            )
+            self.assertEqual(
+                result["verified_constraints"],
+                {"constraints.txt:harbor": "0.22.0"},
             )
 
             with self.assertRaises(check_source_bundle.BundleError):
@@ -126,6 +133,17 @@ class SourceBundleTest(unittest.TestCase):
                     {"evaluator.txt": evaluator_sha256},
                     {"tasks/smoke/environment/Dockerfile": expected_image},
                     {"tasks/smoke": "0" * 64},
+                )
+            with self.assertRaises(check_source_bundle.BundleError):
+                check_source_bundle.check_bundle(
+                    bundle,
+                    evaluation_revision,
+                    base_revision,
+                    repository,
+                    {"evaluator.txt": evaluator_sha256},
+                    {"tasks/smoke/environment/Dockerfile": expected_image},
+                    {"tasks/smoke": task_checksum},
+                    {("constraints.txt", "harbor"): "9.9.9"},
                 )
 
     def test_rejects_secret_in_deleted_blob(self) -> None:
