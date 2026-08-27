@@ -16,6 +16,7 @@ judge_prompt="${repo_root}/judges/smoke-question-answer.md"
 judge_schema="${repo_root}/judges/smoke-question-answer.schema.json"
 harbor_constraints="${repo_root}/config/harbor-0.22.0.constraints"
 source_bundle_checker="${repo_root}/scripts/check_source_bundle.py"
+oci_index_fetcher="${repo_root}/scripts/fetch_oci_index.py"
 environment_image=""
 environment_manifest_digest=""
 environment_manifest_evidence=""
@@ -52,7 +53,7 @@ if [[ -n "$(git -C "${repo_root}" status --porcelain --untracked-files=all)" ]];
   fail "commit or remove tracked and untracked files before running so evidence can name an exact evaluation revision"
 fi
 
-for command_name in uv docker codex python3; do
+for command_name in uv docker codex python3 curl jq; do
   command -v "${command_name}" >/dev/null 2>&1 || fail "missing command: ${command_name}"
 done
 
@@ -61,6 +62,7 @@ done
 [[ -f "${codex_config}" ]] || fail "missing Codex config"
 [[ -f "${harbor_constraints}" ]] || fail "missing Harbor constraints"
 [[ -x "${source_bundle_checker}" ]] || fail "missing executable source-bundle checker"
+[[ -x "${oci_index_fetcher}" ]] || fail "missing executable OCI index fetcher"
 environment_image="$(awk 'toupper($1) == "FROM" {print $2; exit}' "${task_dir}/environment/Dockerfile")"
 [[ "${environment_image}" =~ ^ubuntu:24\.04@sha256:[a-f0-9]{64}$ ]] || fail "smoke environment image is not pinned by digest"
 harbor_constraints_sha256="$(shasum -a 256 "${harbor_constraints}" | awk '{print $1}')"
@@ -179,43 +181,12 @@ docker_server_os="${docker_server_platform%%/*}"
 docker_server_architecture="${docker_server_platform##*/}"
 
 environment_manifest_evidence="$(mktemp /tmp/hydra-eval-environment-index.XXXXXX)"
-docker manifest inspect "${environment_image}" > "${environment_manifest_evidence}" \
-  || fail "could not preserve the environment image index"
-manifest_match="$(
-  python3 - "${environment_manifest_evidence}" \
-    "${docker_server_os}" "${docker_server_architecture}" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-manifest_path, expected_os, expected_architecture = sys.argv[1:]
-document = json.loads(Path(manifest_path).read_text())
-entries = document.get("manifests") if isinstance(document, dict) else None
-if not isinstance(entries, list):
-    raise SystemExit("environment manifest is not an OCI image index")
-matches = []
-for descriptor in entries:
-    if not isinstance(descriptor, dict):
-        continue
-    platform = descriptor.get("platform") or {}
-    if platform.get("os") != expected_os or platform.get("architecture") != expected_architecture:
-        continue
-    digest = descriptor.get("digest")
-    if not isinstance(digest, str):
-        continue
-    resolved = f"{expected_os}/{expected_architecture}"
-    variant = platform.get("variant")
-    if isinstance(variant, str) and variant:
-        resolved += f"/{variant}"
-    matches.append((digest, resolved))
-
-if len(matches) != 1:
-    raise SystemExit(
-        f"expected one manifest for {expected_os}/{expected_architecture}, found {len(matches)}"
-    )
-print(*matches[0], sep="\t")
-PY
-)" || fail "could not resolve the environment child manifest"
+manifest_match="$(python3 "${oci_index_fetcher}" \
+  --image "${environment_image}" \
+  --output "${environment_manifest_evidence}" \
+  --os "${docker_server_os}" \
+  --architecture "${docker_server_architecture}")" \
+  || fail "could not preserve and resolve the registry-authenticated environment index"
 IFS=$'\t' read -r environment_manifest_digest container_platform <<< "${manifest_match}"
 [[ "${environment_manifest_digest}" =~ ^sha256:[a-f0-9]{64}$ ]] \
   || fail "resolved environment manifest digest is invalid"
@@ -299,6 +270,22 @@ cp "${answer_path}" "${judge_input}/answer.txt"
 cp "${reward_path}" "${judge_input}/verifier-reward.json"
 
 printf '%s\n' "[3/4] Separate read-only Codex judge"
+judge_invocation="${judge_dir}/invocation.json"
+jq -n \
+  --arg agent "codex" \
+  --arg agent_version "${judge_codex_version}" \
+  --arg model "${MODEL}" \
+  --arg reasoning "${REASONING}" \
+  '{
+    agent: $agent,
+    agent_version: $agent_version,
+    model: $model,
+    reasoning: $reasoning,
+    ephemeral: true,
+    ignore_user_config: true,
+    ignore_rules: true,
+    sandbox: "read-only"
+  }' > "${judge_invocation}"
 judge_started="$(python3 -c 'import time; print(time.time())')"
 codex exec \
   --ephemeral \
@@ -323,6 +310,7 @@ result_dir="$(python3 "${repo_root}/scripts/collect_smoke.py" \
   --job-dir "${codex_job_dir}" \
   --judge-result "${judge_dir}/result.json" \
   --judge-events "${judge_dir}/events.jsonl" \
+  --judge-invocation "${judge_invocation}" \
   --results-root "${results_root}" \
   --evaluation-revision "${evaluation_revision}" \
   --evidence-collector-revision "${evaluation_revision}" \

@@ -59,6 +59,7 @@ validate_evaluation_bundle() {
   local evaluation_bundle_sha256="$5"
   local expected_file_sha256="${6:-}"
   local expected_docker_image="${7:-}"
+  local expected_task_checksum="${8:-}"
   local bundle_path="${result_dir}/source/evaluation.bundle"
   local expected_prerequisite="${evaluation_base_revision}"
   local checker_args=()
@@ -84,6 +85,9 @@ validate_evaluation_bundle() {
   fi
   if [[ -n "${expected_docker_image}" ]]; then
     checker_args+=(--expected-docker-image "${expected_docker_image}")
+  fi
+  if [[ -n "${expected_task_checksum}" ]]; then
+    checker_args+=(--expected-task-checksum "${expected_task_checksum}")
   fi
   python3 "${checker_args[@]}" >/dev/null \
     || fail "evaluation source bundle provenance or object safety failed in ${result_label}"
@@ -141,6 +145,7 @@ validate_result() {
       harbor/trajectory.json \
       harbor/trial-result.json \
       harbor/verifier-reward.json \
+      judge/invocation.json \
       judge/metrics.json \
       judge/result.json \
       source/evaluation.bundle; do
@@ -218,7 +223,8 @@ validate_result() {
     validate_evaluation_bundle "${result_dir}" "${result_label}" \
       "${evaluation_revision}" "${evaluation_base_revision}" "${evaluation_bundle_sha256}" \
       "config/harbor-0.22.0.constraints=${harbor_constraints_sha256}" \
-      "tasks/smoke-question-answer/environment/Dockerfile=${environment_image}"
+      "tasks/smoke-question-answer/environment/Dockerfile=${environment_image}" \
+      "tasks/smoke-question-answer=$(jq -r '.provenance.task_checksum' "${result_dir}/scorecard.json")"
     cmp -s "${result_dir}/harbor/answer.txt" <(printf '42\n') \
       || fail "answer is not exactly 42 followed by newline in ${result_label}"
     jq -e --slurpfile scorecard "${result_dir}/scorecard.json" '
@@ -236,6 +242,27 @@ validate_result() {
       . == $scorecard[0].measures.judge
     ' "${result_dir}/judge/metrics.json" >/dev/null \
       || fail "judge measures do not match preserved evidence in ${result_label}"
+    jq -e --slurpfile scorecard "${result_dir}/scorecard.json" '
+      (keys | sort) == [
+        "agent",
+        "agent_version",
+        "ephemeral",
+        "ignore_rules",
+        "ignore_user_config",
+        "model",
+        "reasoning",
+        "sandbox"
+      ]
+      and .agent == $scorecard[0].provenance.judge_agent
+      and .agent_version == $scorecard[0].provenance.judge_agent_version
+      and .model == $scorecard[0].provenance.judge_model
+      and .reasoning == $scorecard[0].provenance.judge_reasoning
+      and .ephemeral == true
+      and .ignore_user_config == true
+      and .ignore_rules == true
+      and .sandbox == "read-only"
+    ' "${result_dir}/judge/invocation.json" >/dev/null \
+      || fail "judge identity or isolation does not match preserved invocation evidence in ${result_label}"
     jq -e '
       def nonempty: type == "string" and test("\\S");
       (.schema_version | type == "string" and startswith("ATIF-v"))
@@ -260,15 +287,24 @@ validate_result() {
       || fail "ATIF trajectory lacks a task instruction or agent action in ${result_label}"
     if ! python3 - "${result_dir}/scorecard.json" \
       "${result_dir}/harbor/environment-manifest.json" <<'PY'
+import hashlib
 import json
 import sys
 from pathlib import Path
 
 scorecard = json.loads(Path(sys.argv[1]).read_text())
-manifest = json.loads(Path(sys.argv[2]).read_text())
+manifest_path = Path(sys.argv[2])
+raw_manifest = manifest_path.read_bytes()
+manifest = json.loads(raw_manifest)
 runtime = scorecard["provenance"]["container_runtime"]
 expected_platform = runtime["platform"]
 expected_digest = runtime["base_manifest_digest"]
+expected_index_digest = scorecard["provenance"]["environment_image"].rpartition("@")[2]
+observed_index_digest = "sha256:" + hashlib.sha256(raw_manifest).hexdigest()
+if observed_index_digest != expected_index_digest:
+    raise SystemExit(
+        f"environment index hashes to {observed_index_digest}, expected {expected_index_digest}"
+    )
 descriptors = manifest.get("manifests") if isinstance(manifest, dict) else None
 if (
     not isinstance(manifest, dict)
@@ -366,8 +402,23 @@ PY
       def matches($pattern): type == "string" and test($pattern);
       def nonempty: type == "string" and length > 0;
       def nonnegative_number: type == "number" and . >= 0;
-      def nonempty_measure:
-        nonnegative_number or (type == "object" and length > 0);
+      def observed_measure:
+        nonnegative_number
+        or (
+          type == "object"
+          and length > 0
+          and ([.. | numbers] | length > 0)
+          and all(.. | numbers; . >= 0)
+          and (
+            [
+              ..
+              | objects
+              | keys[]
+              | select(. == "score" or . == "overall_score" or . == "composite_score")
+            ]
+            | length == 0
+          )
+        );
       def evidence_path:
         type == "string"
         and test("^artifacts/[A-Za-z0-9._/-]+$")
@@ -401,6 +452,24 @@ PY
         and (.type == "deterministic" or .type == "model" or .type == "human")
         and (.passed | type == "boolean")
         and (.evidence | evidence_path)
+        and (
+          if .type == "model"
+          then
+            (.rubric | nonempty)
+            and (.reason | nonempty)
+            and (.grader | type == "object")
+            and (.grader.name | nonempty)
+            and (.grader.version | nonempty)
+            and (.grader.model | nonempty)
+          elif .type == "human"
+          then
+            (.rubric | nonempty)
+            and (.reason | nonempty)
+            and (.reviewer | type == "object")
+            and (.reviewer.name | nonempty)
+          else true
+          end
+        )
       )
       and (
         if .status == "pass"
@@ -412,18 +481,24 @@ PY
         .measures
         | type == "object"
         and length > 0
-        and (has("score") | not)
-        and (has("overall_score") | not)
-        and (has("composite_score") | not)
         and (
-          (.elapsed_seconds | nonempty_measure)
-          or (.duration_seconds | nonempty_measure)
-          or (.latency_seconds | nonempty_measure)
-          or (.time | nonempty_measure)
-          or (.tokens | nonempty_measure)
-          or (.cost | nonempty_measure)
-          or (.quality | nonempty_measure)
-          or (.safety | nonempty_measure)
+          [
+            ..
+            | objects
+            | keys[]
+            | select(. == "score" or . == "overall_score" or . == "composite_score")
+          ]
+          | length == 0
+        )
+        and (
+          (.elapsed_seconds | observed_measure)
+          or (.duration_seconds | observed_measure)
+          or (.latency_seconds | observed_measure)
+          or (.time | observed_measure)
+          or (.tokens | observed_measure)
+          or (.cost | observed_measure)
+          or (.quality | observed_measure)
+          or (.safety | observed_measure)
         )
       )
     ' "${result_dir}/scorecard.json" >/dev/null \

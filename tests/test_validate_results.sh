@@ -23,17 +23,43 @@ mkdir -p "${fixture_repo}/config"
 cp "${source_root}/config/harbor-0.22.0.constraints" \
   "${fixture_repo}/config/harbor-0.22.0.constraints"
 fixture_constraints_sha256="$(shasum -a 256 "${fixture_repo}/config/harbor-0.22.0.constraints" | awk '{print $1}')"
-mkdir -p "${fixture_repo}/tasks/smoke-question-answer/environment"
-cp "${source_root}/tasks/smoke-question-answer/environment/Dockerfile" \
-  "${fixture_repo}/tasks/smoke-question-answer/environment/Dockerfile"
-fixture_environment_image="$(awk 'toupper($1) == "FROM" {print $2; exit}' \
-  "${fixture_repo}/tasks/smoke-question-answer/environment/Dockerfile")"
+fixture_environment_manifest="${fixture_repo}/fixture-environment-manifest.json"
+jq -c -n '{
+  schemaVersion: 2,
+  mediaType: "application/vnd.oci.image.index.v1+json",
+  manifests: [{
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    size: 424,
+    digest: ("sha256:" + ("e" * 64)),
+    platform: {architecture: "arm64", os: "linux", variant: "v8"}
+  }]
+}' > "${fixture_environment_manifest}"
+fixture_environment_index_digest="$(shasum -a 256 "${fixture_environment_manifest}" | awk '{print $1}')"
+fixture_environment_image="ubuntu:24.04@sha256:${fixture_environment_index_digest}"
+mkdir -p "${fixture_repo}/tasks"
+cp -R "${source_root}/tasks/smoke-question-answer" \
+  "${fixture_repo}/tasks/smoke-question-answer"
+printf 'FROM %s\n\nWORKDIR /app\n' "${fixture_environment_image}" \
+  > "${fixture_repo}/tasks/smoke-question-answer/environment/Dockerfile"
 git -C "${fixture_repo}" add \
   evaluator-source.txt \
   config/harbor-0.22.0.constraints \
-  tasks/smoke-question-answer/environment/Dockerfile
+  tasks/smoke-question-answer
 git -C "${fixture_repo}" commit -q -m evaluator-source
 evaluation_revision="$(git -C "${fixture_repo}" rev-parse HEAD)"
+fixture_task_checksum="$(python3 - "${source_root}" "${fixture_repo}" "${evaluation_revision}" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+
+module_path = Path(sys.argv[1]) / "scripts" / "check_source_bundle.py"
+spec = importlib.util.spec_from_file_location("check_source_bundle", module_path)
+assert spec and spec.loader
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(module.harbor_task_checksum(Path(sys.argv[2]), sys.argv[3], "tasks/smoke-question-answer"))
+PY
+)"
 
 write_smoke_checksums() {
   local directory="$1"
@@ -49,6 +75,7 @@ write_smoke_checksums() {
       harbor/trajectory.json \
       harbor/trial-result.json \
       harbor/verifier-reward.json \
+      judge/invocation.json \
       judge/metrics.json \
       judge/result.json \
       source/evaluation.bundle \
@@ -89,33 +116,32 @@ jq --arg revision "${evaluation_revision}" \
   --arg base_revision "${repository_base_revision}" \
   --arg bundle_sha256 "${evaluation_bundle_sha256}" \
   --arg constraints_sha256 "${fixture_constraints_sha256}" \
-  --arg environment_image "${fixture_environment_image}" '
+  --arg environment_image "${fixture_environment_image}" \
+  --arg task_checksum "${fixture_task_checksum}" '
     .provenance.evaluation_revision = $revision
     | .provenance.evidence_collector_revision = $revision
     | .provenance.evaluation_base_revision = $base_revision
     | .provenance.evaluation_bundle_sha256 = $bundle_sha256
     | .provenance.harbor_constraints_sha256 = $constraints_sha256
     | .provenance.environment_image = $environment_image
+    | .provenance.task_checksum = $task_checksum
+    | .provenance.oracle_task_checksum = $task_checksum
   ' \
   "${result_dir}/scorecard.json" > "${scorecard_tmp}"
 mv "${scorecard_tmp}" "${result_dir}/scorecard.json"
 printf '%s\n' '{"id":"00000000-0000-0000-0000-000000000001","stats":{"n_completed_trials":1,"n_errored_trials":0,"n_input_tokens":10,"n_cache_tokens":3,"n_output_tokens":2,"cost_usd":0.001}}' > "${result_dir}/harbor/job-result.json"
 printf '%s\n' '{"id":"00000000-0000-0000-0000-000000000010","stats":{"n_completed_trials":1,"n_errored_trials":0}}' > "${result_dir}/harbor/oracle-job-result.json"
-printf '%s\n' '{"task_name":"openboa/hydra-eval-smoke-question-answer","task_checksum":"task-checksum","agent_info":{"name":"codex","version":"0.147.0","model_info":{"name":"gpt-5.6-luna"}},"started_at":"2026-08-27T00:00:00Z","finished_at":"2026-08-27T00:00:01.500000Z","verifier_result":{"rewards":{"reward":1}},"exception_info":null}' > "${result_dir}/harbor/trial-result.json"
-printf '%s\n' '{"task_name":"openboa/hydra-eval-smoke-question-answer","task_checksum":"task-checksum","agent_info":{"name":"oracle"},"verifier_result":{"rewards":{"reward":1}},"exception_info":null}' > "${result_dir}/harbor/oracle-trial-result.json"
+printf '%s\n' '{"task_name":"openboa/hydra-eval-smoke-question-answer","task_checksum":"task-checksum","agent_info":{"name":"codex","version":"0.147.0","model_info":{"name":"gpt-5.6-luna"}},"started_at":"2026-08-27T00:00:00Z","finished_at":"2026-08-27T00:00:01.500000Z","verifier_result":{"rewards":{"reward":1}},"exception_info":null}' \
+  | jq --arg checksum "${fixture_task_checksum}" '.task_checksum = $checksum' \
+  > "${result_dir}/harbor/trial-result.json"
+printf '%s\n' '{"task_name":"openboa/hydra-eval-smoke-question-answer","task_checksum":"task-checksum","agent_info":{"name":"oracle"},"verifier_result":{"rewards":{"reward":1}},"exception_info":null}' \
+  | jq --arg checksum "${fixture_task_checksum}" '.task_checksum = $checksum' \
+  > "${result_dir}/harbor/oracle-trial-result.json"
 printf '%s\n' '{"schema_version":"ATIF-v1.7","steps":[{"source":"user","message":"What is 19 + 23?"},{"source":"agent","message":"Writing 42.","tool_calls":[{"function_name":"exec","arguments":{"input":"write 42"}}]}]}' > "${result_dir}/harbor/trajectory.json"
-jq -n '{
-  schemaVersion: 2,
-  mediaType: "application/vnd.oci.image.index.v1+json",
-  manifests: [{
-    mediaType: "application/vnd.oci.image.manifest.v1+json",
-    size: 424,
-    digest: ("sha256:" + ("e" * 64)),
-    platform: {architecture: "arm64", os: "linux", variant: "v8"}
-  }]
-}' > "${result_dir}/harbor/environment-manifest.json"
+cp "${fixture_environment_manifest}" "${result_dir}/harbor/environment-manifest.json"
 printf '%s\n' '{"answer_exact":1,"reward":1}' > "${result_dir}/harbor/verifier-reward.json"
 mkdir -p "${result_dir}/judge"
+printf '%s\n' '{"agent":"codex","agent_version":"0.144.5","model":"gpt-5.6-luna","reasoning":"low","ephemeral":true,"ignore_user_config":true,"ignore_rules":true,"sandbox":"read-only"}' > "${result_dir}/judge/invocation.json"
 printf '%s\n' '{"elapsed_seconds":0.5,"input_tokens":8,"output_tokens":2}' > "${result_dir}/judge/metrics.json"
 printf '%s\n' '{"verdict":"pass","score":1,"reason":"The answer is correct."}' > "${result_dir}/judge/result.json"
 write_smoke_checksums "${result_dir}"
@@ -290,6 +316,34 @@ if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
 fi
 mv "${wrong_constraints_dir}" "${fixture_repo}/wrong-constraints-smoke-result"
 
+wrong_task_job_id="00000000-0000-0000-0000-000000000021"
+wrong_task_dir="${fixture_repo}/results/smoke/${wrong_task_job_id}"
+cp -R "${result_dir}" "${wrong_task_dir}"
+wrong_task_scorecard_tmp="${wrong_task_dir}/scorecard.json.tmp"
+jq --arg job_id "${wrong_task_job_id}" --arg checksum "$(printf 'a%.0s' {1..64})" '
+  .job_id = $job_id
+  | .provenance.task_checksum = $checksum
+  | .provenance.oracle_task_checksum = $checksum
+' "${wrong_task_dir}/scorecard.json" > "${wrong_task_scorecard_tmp}"
+mv "${wrong_task_scorecard_tmp}" "${wrong_task_dir}/scorecard.json"
+for trial_result in harbor/trial-result.json harbor/oracle-trial-result.json; do
+  wrong_task_trial_tmp="${wrong_task_dir}/${trial_result}.tmp"
+  jq --arg checksum "$(printf 'a%.0s' {1..64})" '.task_checksum = $checksum' \
+    "${wrong_task_dir}/${trial_result}" > "${wrong_task_trial_tmp}"
+  mv "${wrong_task_trial_tmp}" "${wrong_task_dir}/${trial_result}"
+done
+wrong_task_job_tmp="${wrong_task_dir}/harbor/job-result.json.tmp"
+jq --arg job_id "${wrong_task_job_id}" '.id = $job_id' \
+  "${wrong_task_dir}/harbor/job-result.json" > "${wrong_task_job_tmp}"
+mv "${wrong_task_job_tmp}" "${wrong_task_dir}/harbor/job-result.json"
+write_smoke_checksums "${wrong_task_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: task checksum diverging from bundled Harbor task was accepted' >&2
+  exit 1
+fi
+mv "${wrong_task_dir}" "${fixture_repo}/wrong-task-smoke-result"
+
 wrong_image_job_id="00000000-0000-0000-0000-000000000015"
 wrong_image_dir="${fixture_repo}/results/smoke/${wrong_image_job_id}"
 cp -R "${result_dir}" "${wrong_image_dir}"
@@ -309,6 +363,26 @@ if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
   exit 1
 fi
 mv "${wrong_image_dir}" "${fixture_repo}/wrong-image-smoke-result"
+
+rewritten_index_job_id="00000000-0000-0000-0000-000000000022"
+rewritten_index_dir="${fixture_repo}/results/smoke/${rewritten_index_job_id}"
+cp -R "${result_dir}" "${rewritten_index_dir}"
+printf '\n' >> "${rewritten_index_dir}/harbor/environment-manifest.json"
+rewritten_index_scorecard_tmp="${rewritten_index_dir}/scorecard.json.tmp"
+jq --arg job_id "${rewritten_index_job_id}" '.job_id = $job_id' \
+  "${rewritten_index_dir}/scorecard.json" > "${rewritten_index_scorecard_tmp}"
+mv "${rewritten_index_scorecard_tmp}" "${rewritten_index_dir}/scorecard.json"
+rewritten_index_job_tmp="${rewritten_index_dir}/harbor/job-result.json.tmp"
+jq --arg job_id "${rewritten_index_job_id}" '.id = $job_id' \
+  "${rewritten_index_dir}/harbor/job-result.json" > "${rewritten_index_job_tmp}"
+mv "${rewritten_index_job_tmp}" "${rewritten_index_dir}/harbor/job-result.json"
+write_smoke_checksums "${rewritten_index_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: OCI index bytes not matching the pinned digest were accepted' >&2
+  exit 1
+fi
+mv "${rewritten_index_dir}" "${fixture_repo}/rewritten-index-smoke-result"
 
 empty_trajectory_job_id="00000000-0000-0000-0000-000000000016"
 empty_trajectory_dir="${fixture_repo}/results/smoke/${empty_trajectory_job_id}"
@@ -413,6 +487,29 @@ if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
 fi
 mv "${wrong_judge_dir}" "${fixture_repo}/wrong-judge-smoke-result"
 
+wrong_judge_identity_job_id="00000000-0000-0000-0000-000000000023"
+wrong_judge_identity_dir="${fixture_repo}/results/smoke/${wrong_judge_identity_job_id}"
+cp -R "${result_dir}" "${wrong_judge_identity_dir}"
+wrong_judge_identity_scorecard_tmp="${wrong_judge_identity_dir}/scorecard.json.tmp"
+jq --arg job_id "${wrong_judge_identity_job_id}" '
+  .job_id = $job_id
+  | .provenance.judge_agent_version = "9.9.9"
+  | .provenance.judge_model = "different-model"
+  | .provenance.judge_reasoning = "high"
+' "${wrong_judge_identity_dir}/scorecard.json" > "${wrong_judge_identity_scorecard_tmp}"
+mv "${wrong_judge_identity_scorecard_tmp}" "${wrong_judge_identity_dir}/scorecard.json"
+wrong_judge_identity_job_tmp="${wrong_judge_identity_dir}/harbor/job-result.json.tmp"
+jq --arg job_id "${wrong_judge_identity_job_id}" '.id = $job_id' \
+  "${wrong_judge_identity_dir}/harbor/job-result.json" > "${wrong_judge_identity_job_tmp}"
+mv "${wrong_judge_identity_job_tmp}" "${wrong_judge_identity_dir}/harbor/job-result.json"
+write_smoke_checksums "${wrong_judge_identity_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: judge identity diverging from invocation evidence was accepted' >&2
+  exit 1
+fi
+mv "${wrong_judge_identity_dir}" "${fixture_repo}/wrong-judge-identity-smoke-result"
+
 invalid_result_dir="${fixture_repo}/results/hydra/0.1.0/00000000-0000-0000-0000-000000000003"
 mkdir -p "${invalid_result_dir}/source"
 cp "${result_dir}/source/evaluation.bundle" "${invalid_result_dir}/source/evaluation.bundle"
@@ -466,6 +563,23 @@ if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
 fi
 mv "${unsupported_pass_dir}" "${fixture_repo}/unsupported-hydra-pass-result"
 
+unsupported_model_result_id="00000000-0000-0000-0000-000000000024"
+unsupported_model_dir="${fixture_repo}/results/hydra/0.1.0/${unsupported_model_result_id}"
+cp -R "${hydra_result_dir}" "${unsupported_model_dir}"
+unsupported_model_scorecard_tmp="${unsupported_model_dir}/scorecard.json.tmp"
+jq --arg result_id "${unsupported_model_result_id}" '
+  .result_id = $result_id
+  | .assertions[0].type = "model"
+' "${unsupported_model_dir}/scorecard.json" > "${unsupported_model_scorecard_tmp}"
+mv "${unsupported_model_scorecard_tmp}" "${unsupported_model_dir}/scorecard.json"
+write_hydra_checksums "${unsupported_model_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: model assertion without rubric and grader context was accepted' >&2
+  exit 1
+fi
+mv "${unsupported_model_dir}" "${fixture_repo}/unsupported-model-assertion-result"
+
 mismatched_assertion_result_id="00000000-0000-0000-0000-000000000019"
 mismatched_assertion_dir="${fixture_repo}/results/hydra/0.1.0/${mismatched_assertion_result_id}"
 cp -R "${hydra_result_dir}" "${mismatched_assertion_dir}"
@@ -499,6 +613,23 @@ if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
   exit 1
 fi
 mv "${composite_measure_dir}" "${fixture_repo}/composite-measure-result"
+
+nested_composite_result_id="00000000-0000-0000-0000-000000000025"
+nested_composite_dir="${fixture_repo}/results/hydra/0.1.0/${nested_composite_result_id}"
+cp -R "${hydra_result_dir}" "${nested_composite_dir}"
+nested_composite_scorecard_tmp="${nested_composite_dir}/scorecard.json.tmp"
+jq --arg result_id "${nested_composite_result_id}" '
+  .result_id = $result_id
+  | .measures = {tokens: {composite_score: 1}}
+' "${nested_composite_dir}/scorecard.json" > "${nested_composite_scorecard_tmp}"
+mv "${nested_composite_scorecard_tmp}" "${nested_composite_dir}/scorecard.json"
+write_hydra_checksums "${nested_composite_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: nested composite-only Hydra measures were accepted' >&2
+  exit 1
+fi
+mv "${nested_composite_dir}" "${fixture_repo}/nested-composite-measure-result"
 
 printf '%s\n' '41' > "${result_dir}/harbor/answer.txt"
 git -C "${fixture_repo}" add results

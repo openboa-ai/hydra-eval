@@ -66,6 +66,9 @@ class SourceBundleTest(unittest.TestCase):
                 f"^{base_revision}",
             )
             evaluator_sha256 = hashlib.sha256(b"safe evaluator\n").hexdigest()
+            task_checksum = check_source_bundle.harbor_task_checksum(
+                repository, evaluation_revision, "tasks/smoke"
+            )
 
             result = check_source_bundle.check_bundle(
                 bundle,
@@ -74,6 +77,7 @@ class SourceBundleTest(unittest.TestCase):
                 repository,
                 {"evaluator.txt": evaluator_sha256},
                 {"tasks/smoke/environment/Dockerfile": expected_image},
+                {"tasks/smoke": task_checksum},
             )
             self.assertEqual(result["revision"], evaluation_revision)
             self.assertEqual(result["prerequisite"], base_revision)
@@ -82,6 +86,10 @@ class SourceBundleTest(unittest.TestCase):
             self.assertEqual(
                 result["verified_docker_images"],
                 {"tasks/smoke/environment/Dockerfile": expected_image},
+            )
+            self.assertEqual(
+                result["verified_task_checksums"],
+                {"tasks/smoke": task_checksum},
             )
 
             with self.assertRaises(check_source_bundle.BundleError):
@@ -108,6 +116,16 @@ class SourceBundleTest(unittest.TestCase):
                             "ubuntu:24.04@sha256:" + "b" * 64
                         )
                     },
+                )
+            with self.assertRaises(check_source_bundle.BundleError):
+                check_source_bundle.check_bundle(
+                    bundle,
+                    evaluation_revision,
+                    base_revision,
+                    repository,
+                    {"evaluator.txt": evaluator_sha256},
+                    {"tasks/smoke/environment/Dockerfile": expected_image},
+                    {"tasks/smoke": "0" * 64},
                 )
 
     def test_rejects_secret_in_deleted_blob(self) -> None:

@@ -110,8 +110,20 @@ def parse_time(value: Any, label: str) -> datetime:
 
 
 def validate_environment_manifest(
-    path: Path, expected_platform: str, expected_digest: str
+    path: Path, expected_image: str, expected_platform: str, expected_digest: str
 ) -> None:
+    try:
+        raw_manifest = path.read_bytes()
+    except OSError as exc:
+        raise EvidenceError(f"cannot read environment manifest {path}: {exc}") from exc
+    image_digest = expected_image.rpartition("@")[2]
+    observed_digest = f"sha256:{hashlib.sha256(raw_manifest).hexdigest()}"
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest):
+        raise EvidenceError("environment image is not pinned by SHA-256")
+    if observed_digest != image_digest:
+        raise EvidenceError(
+            f"environment index hashes to {observed_digest}, expected {image_digest}"
+        )
     manifest = load_json(path)
     descriptors = manifest.get("manifests")
     if manifest.get("schemaVersion") != 2 or not isinstance(descriptors, list):
@@ -192,7 +204,7 @@ def copy_checked(source: Path, target: Path) -> None:
     target.write_bytes(data)
 
 
-def check_evaluation_bundle(args: argparse.Namespace) -> None:
+def check_evaluation_bundle(args: argparse.Namespace, task_checksum: str) -> None:
     checker = Path(__file__).with_name("check_source_bundle.py")
     completed = subprocess.run(
         [
@@ -213,6 +225,8 @@ def check_evaluation_bundle(args: argparse.Namespace) -> None:
                 "tasks/smoke-question-answer/environment/Dockerfile="
                 f"{args.environment_image}"
             ),
+            "--expected-task-checksum",
+            f"tasks/smoke-question-answer={task_checksum}",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -326,6 +340,7 @@ def build_evidence(args: argparse.Namespace) -> Path:
     trajectory = load_json(trajectory_path)
     judge = load_json(args.judge_result)
     judge_events = load_jsonl(args.judge_events)
+    judge_invocation = load_json(args.judge_invocation)
 
     if reward.get("answer_exact") != 1 or reward.get("reward") != 1:
         raise EvidenceError("deterministic verifier did not pass")
@@ -339,8 +354,21 @@ def build_evidence(args: argparse.Namespace) -> Path:
         raise EvidenceError("AI judge did not pass")
     if not isinstance(judge.get("reason"), str) or not judge["reason"].strip():
         raise EvidenceError("AI judge reason is empty")
+    expected_judge_invocation = {
+        "agent": "codex",
+        "agent_version": args.judge_agent_version,
+        "model": args.judge_model,
+        "reasoning": args.judge_reasoning,
+        "ephemeral": True,
+        "ignore_user_config": True,
+        "ignore_rules": True,
+        "sandbox": "read-only",
+    }
+    if judge_invocation != expected_judge_invocation:
+        raise EvidenceError("judge invocation metadata does not match the requested isolation")
     validate_environment_manifest(
         args.environment_manifest,
+        args.environment_image,
         args.container_platform,
         args.environment_manifest_digest,
     )
@@ -352,7 +380,7 @@ def build_evidence(args: argparse.Namespace) -> Path:
     judge_usage = find_usage(judge_events)
     if judge_usage is None:
         raise EvidenceError("judge JSONL does not contain token usage")
-    check_evaluation_bundle(args)
+    check_evaluation_bundle(args, str(trial_result.get("task_checksum", "")))
     try:
         evaluation_bundle_data = args.evaluation_source_bundle.read_bytes()
     except OSError as exc:
@@ -469,6 +497,7 @@ def build_evidence(args: argparse.Namespace) -> Path:
             stage / "harbor" / "environment-manifest.json",
         )
         copy_checked(args.judge_result, stage / "judge" / "result.json")
+        copy_checked(args.judge_invocation, stage / "judge" / "invocation.json")
         write_json(stage / "judge" / "metrics.json", judge_measures)
         copy_checked(args.evaluation_source_bundle, stage / "source" / "evaluation.bundle")
 
@@ -495,7 +524,7 @@ This record proves that the minimal Hydra Eval plumbing completed one Oracle ref
 - Judge: `codex {args.judge_agent_version}` with `{args.judge_model}` at `{args.judge_reasoning}` reasoning
 - Actual billed cost: `unknown` (ChatGPT subscription authentication)
 
-See `scorecard.json` for separate checks, timing, token use, and the API-equivalent estimate reported by Harbor. Selected job evidence, the native OCI image index, and the sanitized public trajectory are preserved under `harbor/`; the structured judge result and sanitized timing/usage evidence are under `judge/`. The exact evaluation commit can be recovered from `source/evaluation.bundle` even after a squash merge. Raw jobs and judge events remain local under the ignored `jobs/` directory.
+See `scorecard.json` for separate checks, timing, token use, and the API-equivalent estimate reported by Harbor. Selected job evidence, the registry-authenticated native OCI image index, and the sanitized public trajectory are preserved under `harbor/`; the structured judge result, invocation metadata, and sanitized timing/usage evidence are under `judge/`. The exact evaluation commit can be recovered from `source/evaluation.bundle` even after a squash merge. Raw jobs and judge events remain local under the ignored `jobs/` directory.
 """
         (stage / "README.md").write_text(readme)
 
@@ -520,6 +549,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--job-dir", type=Path, required=True)
     parser.add_argument("--judge-result", type=Path, required=True)
     parser.add_argument("--judge-events", type=Path, required=True)
+    parser.add_argument("--judge-invocation", type=Path, required=True)
     parser.add_argument("--results-root", type=Path, required=True)
     parser.add_argument("--evaluation-revision", required=True)
     parser.add_argument("--evidence-collector-revision", required=True)

@@ -196,6 +196,98 @@ def check_expected_docker_images(
             )
 
 
+def harbor_task_checksum(repository: Path, revision: str, task_path: str) -> str:
+    """Reproduce Harbor 0.22.0's Task.checksum for a regular-file Git tree.
+
+    Harbor 0.22.0 delegates this value to dirhash 0.5.0 with the default
+    ``name`` and ``data`` entry properties. Git does not retain empty
+    directories, and evaluator tasks must not rely on symlinks, so the tree can
+    be hashed directly without checking it out.
+    """
+
+    if (
+        not re.fullmatch(r"[A-Za-z0-9._/-]+", task_path)
+        or task_path.startswith("/")
+        or ".." in Path(task_path).parts
+    ):
+        raise BundleError(f"invalid task source path: {task_path!r}")
+    normalized = task_path.rstrip("/")
+    prefix = f"{normalized}/"
+    records = run_git(
+        ["ls-tree", "-r", "-z", "--full-tree", revision, "--", normalized],
+        repository=repository,
+    )
+    tree: dict[str, object] = {}
+    file_count = 0
+    for raw_record in records.split(b"\0"):
+        if not raw_record:
+            continue
+        metadata, separator, raw_path = raw_record.partition(b"\t")
+        if not separator:
+            raise BundleError(f"invalid Git tree record under {task_path}")
+        try:
+            mode, object_type, object_id = metadata.decode("ascii").split()
+            source_path = raw_path.decode("utf-8", errors="strict")
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise BundleError(f"invalid Git tree entry under {task_path}") from exc
+        if object_type != "blob" or mode not in {"100644", "100755"}:
+            raise BundleError(
+                f"unsupported task entry {source_path}: mode={mode} type={object_type}"
+            )
+        if not source_path.startswith(prefix):
+            raise BundleError(f"task entry escaped {task_path}: {source_path}")
+        relative = source_path[len(prefix) :]
+        parts = Path(relative).parts
+        if not parts or any(part in {"", ".", ".."} for part in parts):
+            raise BundleError(f"invalid task entry path: {source_path}")
+        content = run_git(["cat-file", "blob", object_id], repository=repository)
+        node = tree
+        for part in parts[:-1]:
+            existing = node.setdefault(part, {})
+            if not isinstance(existing, dict):
+                raise BundleError(f"task path collision at {source_path}")
+            node = existing
+        if parts[-1] in node:
+            raise BundleError(f"duplicate task entry: {source_path}")
+        node[parts[-1]] = hashlib.sha256(content).hexdigest()
+        file_count += 1
+
+    if file_count == 0:
+        raise BundleError(f"task directory is empty or absent: {task_path}")
+
+    def hash_directory(directory: dict[str, object]) -> str:
+        entries: list[str] = []
+        for name, value in directory.items():
+            if isinstance(value, dict):
+                properties = (f"dirhash:{hash_directory(value)}", f"name:{name}")
+            elif isinstance(value, str):
+                properties = (f"data:{value}", f"name:{name}")
+            else:  # pragma: no cover - guarded while constructing the tree
+                raise BundleError(f"invalid task tree node: {name}")
+            entries.append("\0".join(sorted(properties)))
+        descriptor = "\0\0".join(sorted(entries))
+        return hashlib.sha256(descriptor.encode("utf-8")).hexdigest()
+
+    return hash_directory(tree)
+
+
+def check_expected_task_checksums(
+    repository: Path, revision: str, expected_tasks: dict[str, str]
+) -> None:
+    for task_path, expected_checksum in sorted(expected_tasks.items()):
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_checksum):
+            raise BundleError(
+                f"invalid expected Harbor task checksum for {task_path}: "
+                f"{expected_checksum!r}"
+            )
+        observed_checksum = harbor_task_checksum(repository, revision, task_path)
+        if observed_checksum != expected_checksum:
+            raise BundleError(
+                f"bundled {task_path} Harbor task checksum is {observed_checksum}, "
+                f"expected {expected_checksum}"
+            )
+
+
 def check_bundle(
     bundle: Path,
     revision: str,
@@ -203,6 +295,7 @@ def check_bundle(
     repository: Path | None,
     expected_files: dict[str, str] | None = None,
     expected_docker_images: dict[str, str] | None = None,
+    expected_task_checksums: dict[str, str] | None = None,
 ) -> dict[str, object]:
     if not bundle.is_file():
         raise BundleError(f"bundle does not exist: {bundle}")
@@ -279,6 +372,11 @@ def check_bundle(
             revision,
             expected_docker_images if expected_docker_images is not None else {},
         )
+        check_expected_task_checksums(
+            inspection_repo,
+            revision,
+            expected_task_checksums if expected_task_checksums is not None else {},
+        )
 
     return {
         "revision": revision,
@@ -286,6 +384,9 @@ def check_bundle(
         "introduced_object_count": len(introduced),
         "verified_files": sorted((expected_files or {}).keys()),
         "verified_docker_images": dict(sorted((expected_docker_images or {}).items())),
+        "verified_task_checksums": dict(
+            sorted((expected_task_checksums or {}).items())
+        ),
     }
 
 
@@ -310,6 +411,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="append",
         default=[],
         metavar="PATH=IMAGE@SHA256",
+    )
+    parser.add_argument(
+        "--expected-task-checksum",
+        action="append",
+        default=[],
+        metavar="PATH=CHECKSUM",
     )
     return parser.parse_args(argv)
 
@@ -339,6 +446,20 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         expected_docker_images[source_path] = image
+    expected_task_checksums: dict[str, str] = {}
+    for item in args.expected_task_checksum:
+        source_path, separator, checksum = item.rpartition("=")
+        if (
+            not separator
+            or not source_path
+            or source_path in expected_task_checksums
+        ):
+            print(
+                f"check-source-bundle: invalid or duplicate expected task checksum: {item!r}",
+                file=sys.stderr,
+            )
+            return 1
+        expected_task_checksums[source_path] = checksum
     try:
         result = check_bundle(
             args.bundle,
@@ -347,6 +468,7 @@ def main(argv: list[str] | None = None) -> int:
             args.repository,
             expected_files,
             expected_docker_images,
+            expected_task_checksums,
         )
     except BundleError as exc:
         print(f"check-source-bundle: {exc}", file=sys.stderr)

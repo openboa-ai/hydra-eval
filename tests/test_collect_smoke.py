@@ -13,7 +13,33 @@ SPEC = importlib.util.spec_from_file_location("collect_smoke", MODULE_PATH)
 assert SPEC and SPEC.loader
 collect_smoke = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(collect_smoke)
-SMOKE_ENVIRONMENT_IMAGE = "ubuntu:24.04@sha256:" + "e" * 64
+SMOKE_MANIFEST_BYTES = (
+    json.dumps(
+        {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "size": 424,
+                    "digest": "sha256:" + "2" * 64,
+                    "platform": {
+                        "architecture": "arm64",
+                        "os": "linux",
+                        "variant": "v8",
+                    },
+                }
+            ],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    + "\n"
+).encode()
+SMOKE_ENVIRONMENT_IMAGE = (
+    "ubuntu:24.04@sha256:" + hashlib.sha256(SMOKE_MANIFEST_BYTES).hexdigest()
+)
+SMOKE_TASK_CHECKSUM = "c4fba584ee42293450ffc83785e81d20904803da2a3558379b8430596525487a"
 
 
 def write_json(path: Path, value: object) -> None:
@@ -119,7 +145,7 @@ class CollectSmokeTest(unittest.TestCase):
             "trial_uri": "file:///Users/example/private/trial",
             "trial_name": "trial-1",
             "task_name": "openboa/hydra-eval-smoke-question-answer",
-            "task_checksum": "task-checksum",
+            "task_checksum": SMOKE_TASK_CHECKSUM,
             "agent_info": {
                 "name": agent,
                 "version": "0.147.0" if agent == "codex" else "1.0.0",
@@ -186,26 +212,25 @@ class CollectSmokeTest(unittest.TestCase):
 
     def make_environment_manifest(self, root: Path) -> Path:
         manifest = root / "environment-manifest.json"
+        manifest.write_bytes(SMOKE_MANIFEST_BYTES)
+        return manifest
+
+    def make_judge_invocation(self, root: Path) -> Path:
+        invocation = root / "judge-invocation.json"
         write_json(
-            manifest,
+            invocation,
             {
-                "schemaVersion": 2,
-                "mediaType": "application/vnd.oci.image.index.v1+json",
-                "manifests": [
-                    {
-                        "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                        "size": 424,
-                        "digest": "sha256:" + "2" * 64,
-                        "platform": {
-                            "architecture": "arm64",
-                            "os": "linux",
-                            "variant": "v8",
-                        },
-                    }
-                ],
+                "agent": "codex",
+                "agent_version": "0.144.5",
+                "model": "gpt-5.6-luna",
+                "reasoning": "low",
+                "ephemeral": True,
+                "ignore_user_config": True,
+                "ignore_rules": True,
+                "sandbox": "read-only",
             },
         )
-        return manifest
+        return invocation
 
     def test_builds_append_only_sanitized_result(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -249,6 +274,7 @@ class CollectSmokeTest(unittest.TestCase):
                 job_dir=codex,
                 judge_result=judge_result,
                 judge_events=judge_events,
+                judge_invocation=self.make_judge_invocation(root),
                 results_root=root / "results",
                 evaluation_revision=evaluation_revision,
                 evidence_collector_revision=evaluation_revision,
@@ -330,6 +356,19 @@ class CollectSmokeTest(unittest.TestCase):
             self.assertTrue((result_dir / "harbor" / "oracle-trial-result.json").is_file())
             self.assertTrue((result_dir / "judge" / "metrics.json").is_file())
             self.assertEqual(
+                json.loads((result_dir / "judge" / "invocation.json").read_text()),
+                {
+                    "agent": "codex",
+                    "agent_version": "0.144.5",
+                    "model": "gpt-5.6-luna",
+                    "reasoning": "low",
+                    "ephemeral": True,
+                    "ignore_user_config": True,
+                    "ignore_rules": True,
+                    "sandbox": "read-only",
+                },
+            )
+            self.assertEqual(
                 json.loads((result_dir / "judge" / "metrics.json").read_text()),
                 scorecard["measures"]["judge"],
             )
@@ -346,6 +385,16 @@ class CollectSmokeTest(unittest.TestCase):
             self.assertFalse((result_dir / "judge" / "events.jsonl").exists())
             self.assertTrue((result_dir / "checksums.txt").is_file())
 
+            invocation = json.loads(args.judge_invocation.read_text())
+            invocation["model"] = "different-model"
+            write_json(args.judge_invocation, invocation)
+            args.results_root = root / "mismatched-invocation-results"
+            with self.assertRaises(collect_smoke.EvidenceError):
+                collect_smoke.build_evidence(args)
+
+            invocation["model"] = "gpt-5.6-luna"
+            write_json(args.judge_invocation, invocation)
+            args.results_root = root / "results"
             with self.assertRaises(collect_smoke.EvidenceError):
                 collect_smoke.build_evidence(args)
 
@@ -385,6 +434,7 @@ class CollectSmokeTest(unittest.TestCase):
                 job_dir=codex,
                 judge_result=judge_result,
                 judge_events=judge_events,
+                judge_invocation=self.make_judge_invocation(root),
                 results_root=root / "results",
                 evaluation_revision=evaluation_revision,
                 evidence_collector_revision=evaluation_revision,
@@ -443,6 +493,7 @@ class CollectSmokeTest(unittest.TestCase):
                 job_dir=codex,
                 judge_result=judge_result,
                 judge_events=judge_events,
+                judge_invocation=self.make_judge_invocation(root),
                 results_root=root / "results",
                 evaluation_revision=evaluation_revision,
                 evidence_collector_revision=evaluation_revision,
