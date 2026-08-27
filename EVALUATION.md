@@ -85,7 +85,7 @@ Do not hide a decision behind one composite score at this stage. A later aggrega
 
 ## Results and invalidation
 
-Reviewed results belong under `results/hydra/<version>/<result-id>/`. Each result directory may contain the sanitized scorecard and the native artifacts needed to reproduce the claim. It must not contain credentials, private holdout inputs, or unreviewed sensitive traces.
+Reviewed results belong under `results/hydra/<version>/<result-id>/`. Each result directory may contain the sanitized scorecard and the native artifacts needed to reproduce the claim. A passing scorecard must name its assertions, link each one to checksummed evidence under `artifacts/`, show that every assertion passed, and retain separate measures; provenance alone never proves an outcome. It must not contain credentials, private holdout inputs, or unreviewed sensitive traces.
 
 Results are append-only. If a task, verifier, provenance field, or run is wrong, keep the original record and add an invalidation note that explains what no longer supports a claim. Never overwrite a result to make a later candidate look better.
 

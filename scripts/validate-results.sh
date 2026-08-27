@@ -274,10 +274,14 @@ PY
     jq -e --arg hydra_version "${hydra_version}" --arg result_id "${result_id}" '
       def matches($pattern): type == "string" and test($pattern);
       def nonempty: type == "string" and length > 0;
+      def evidence_path:
+        type == "string"
+        and test("^artifacts/[A-Za-z0-9._/-]+$")
+        and (contains("..") | not);
       .kind == "hydra_evaluation"
       and .hydra_version == $hydra_version
       and .result_id == $result_id
-      and (.status | nonempty)
+      and (.status == "pass" or .status == "fail")
       and (.provenance.hydra_revision | matches("^[0-9a-f]{40}$"))
       and (.provenance.hydra_bundle_sha256 | matches("^[0-9a-f]{64}$"))
       and (.provenance.evaluation_revision | matches("^[0-9a-f]{40}$"))
@@ -291,8 +295,27 @@ PY
       and (.provenance.job_id | nonempty)
       and (.provenance.verifier.name | nonempty)
       and ((.provenance.verifier.version // .provenance.verifier.revision) | nonempty)
+      and (.assertions | type == "array" and length > 0)
+      and all(.assertions[];
+        (type == "object")
+        and (.name | nonempty)
+        and (.type == "deterministic" or .type == "model" or .type == "human")
+        and (.passed | type == "boolean")
+        and (.evidence | evidence_path)
+      )
+      and (
+        if .status == "pass"
+        then all(.assertions[]; .passed)
+        else any(.assertions[]; (.passed | not))
+        end
+      )
+      and (.measures | type == "object" and length > 0)
     ' "${result_dir}/scorecard.json" >/dev/null \
       || fail "missing required Hydra provenance in ${result_label}"
+    while IFS= read -r assertion_evidence; do
+      [[ -f "${result_dir}/${assertion_evidence}" ]] \
+        || fail "missing Hydra assertion evidence ${assertion_evidence} in ${result_label}"
+    done < <(jq -r '.assertions[].evidence' "${result_dir}/scorecard.json")
     evaluation_revision="$(jq -r '.provenance.evaluation_revision' "${result_dir}/scorecard.json")"
     evaluation_base_revision="$(jq -r '.provenance.evaluation_base_revision' "${result_dir}/scorecard.json")"
     evaluation_bundle_sha256="$(jq -r '.provenance.evaluation_bundle_sha256' "${result_dir}/scorecard.json")"

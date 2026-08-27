@@ -52,6 +52,7 @@ write_hydra_checksums() {
     for path in \
       README.md \
       artifacts/output.txt \
+      artifacts/verifier.json \
       scorecard.json \
       source/evaluation.bundle \
       source/hydra.bundle; do
@@ -99,7 +100,7 @@ cp "${result_dir}/source/evaluation.bundle" "${hydra_result_dir}/source/evaluati
 git -C "${fixture_repo}" bundle create "${hydra_result_dir}/source/hydra.bundle" HEAD
 hydra_bundle_sha256="$(shasum -a 256 "${hydra_result_dir}/source/hydra.bundle" | awk '{print $1}')"
 printf '%s\n' '# Hydra fixture' > "${hydra_result_dir}/README.md"
-printf '%s\n' '{"kind":"hydra_evaluation","hydra_version":"0.1.0","result_id":"00000000-0000-0000-0000-000000000002","status":"pass","provenance":{"hydra_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","hydra_bundle_sha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","evaluation_revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","task":"project-task","client":{"name":"codex","version":"0.147.0"},"model":{"name":"gpt-5.6-luna"},"environment":{"fingerprint":"sha256:environment"},"job_id":"harbor-job","verifier":{"name":"deterministic-tests","revision":"cccccccccccccccccccccccccccccccccccccccc"}}}' > "${hydra_result_dir}/scorecard.json"
+printf '%s\n' '{"kind":"hydra_evaluation","hydra_version":"0.1.0","result_id":"00000000-0000-0000-0000-000000000002","status":"pass","provenance":{"hydra_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","hydra_bundle_sha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","evaluation_revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","task":"project-task","client":{"name":"codex","version":"0.147.0"},"model":{"name":"gpt-5.6-luna"},"environment":{"fingerprint":"sha256:environment"},"job_id":"harbor-job","verifier":{"name":"deterministic-tests","revision":"cccccccccccccccccccccccccccccccccccccccc"}},"assertions":[{"name":"expected-output","type":"deterministic","passed":true,"evidence":"artifacts/verifier.json"}],"measures":{"elapsed_seconds":1.5}}' > "${hydra_result_dir}/scorecard.json"
 hydra_scorecard_tmp="${hydra_result_dir}/scorecard.json.tmp"
 jq --arg revision "${evaluation_revision}" \
   --arg base_revision "${repository_base_revision}" \
@@ -114,6 +115,7 @@ jq --arg revision "${evaluation_revision}" \
   "${hydra_result_dir}/scorecard.json" > "${hydra_scorecard_tmp}"
 mv "${hydra_scorecard_tmp}" "${hydra_result_dir}/scorecard.json"
 printf '%s\n' 'artifact' > "${hydra_result_dir}/artifacts/output.txt"
+printf '%s\n' '{"passed":true,"name":"expected-output"}' > "${hydra_result_dir}/artifacts/verifier.json"
 write_hydra_checksums "${hydra_result_dir}"
 
 git -C "${fixture_repo}" add results
@@ -290,6 +292,23 @@ if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
   exit 1
 fi
 mv "${wrong_hydra_dir}" "${fixture_repo}/wrong-hydra-revision-result"
+
+unsupported_pass_result_id="00000000-0000-0000-0000-000000000012"
+unsupported_pass_dir="${fixture_repo}/results/hydra/0.1.0/${unsupported_pass_result_id}"
+cp -R "${hydra_result_dir}" "${unsupported_pass_dir}"
+unsupported_pass_scorecard_tmp="${unsupported_pass_dir}/scorecard.json.tmp"
+jq --arg result_id "${unsupported_pass_result_id}" '
+  .result_id = $result_id
+  | del(.assertions, .measures)
+' "${unsupported_pass_dir}/scorecard.json" > "${unsupported_pass_scorecard_tmp}"
+mv "${unsupported_pass_scorecard_tmp}" "${unsupported_pass_dir}/scorecard.json"
+write_hydra_checksums "${unsupported_pass_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: Hydra pass without assertions and measures was accepted' >&2
+  exit 1
+fi
+mv "${unsupported_pass_dir}" "${fixture_repo}/unsupported-hydra-pass-result"
 
 printf '%s\n' '41' > "${result_dir}/harbor/answer.txt"
 git -C "${fixture_repo}" add results

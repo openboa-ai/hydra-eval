@@ -21,6 +21,21 @@ def write_json(path: Path, value: object) -> None:
 
 
 class CollectSmokeTest(unittest.TestCase):
+    def test_rejects_common_credentials(self) -> None:
+        credentials = (
+            b"sk-" + (b"a" * 24),
+            b"gh" + b"p_" + (b"a" * 24),
+            b"github_" + b"pat_" + (b"a" * 24),
+            b"AKIA" + (b"A" * 16),
+            b"xoxb-" + (b"a" * 24),
+            b"-----BEGIN " + b"PRIVATE KEY-----",
+            b'{"access_' + b'token":"' + (b"a" * 24) + b'"}',
+        )
+        for credential in credentials:
+            with self.subTest(prefix=credential[:8]):
+                with self.assertRaises(collect_smoke.EvidenceError):
+                    collect_smoke.check_sensitive("fixture", credential)
+
     def make_evaluation_bundle(
         self, root: Path
     ) -> tuple[Path, Path, str, str]:
