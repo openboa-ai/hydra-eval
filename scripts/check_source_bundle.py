@@ -18,7 +18,7 @@ SECRET_PATTERNS = (
     ("OpenAI-style token", re.compile(rb"sk-[A-Za-z0-9_-]{20,}")),
     ("GitHub token", re.compile(rb"gh[pousr]_[A-Za-z0-9]{20,}")),
     ("GitHub fine-grained token", re.compile(rb"github_pat_[A-Za-z0-9_]{20,}")),
-    ("AWS access key", re.compile(rb"AKIA[0-9A-Z]{16}")),
+    ("AWS access key", re.compile(rb"(?:AKIA|ASIA)[0-9A-Z]{16}")),
     ("Slack token", re.compile(rb"xox[baprs]-[A-Za-z0-9-]{20,}")),
     (
         "private key",

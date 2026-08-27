@@ -18,6 +18,7 @@ harbor_constraints="${repo_root}/config/harbor-0.22.0.constraints"
 source_bundle_checker="${repo_root}/scripts/check_source_bundle.py"
 environment_image=""
 environment_manifest_digest=""
+environment_manifest_evidence=""
 container_platform=""
 host_os=""
 host_architecture=""
@@ -29,6 +30,9 @@ judge_input=""
 cleanup() {
   if [[ -n "${evaluation_source_bundle}" && -f "${evaluation_source_bundle}" ]]; then
     rm -f -- "${evaluation_source_bundle}"
+  fi
+  if [[ -n "${environment_manifest_evidence}" && -f "${environment_manifest_evidence}" ]]; then
+    rm -f -- "${environment_manifest_evidence}"
   fi
   if [[ -n "${judge_input}" && -d "${judge_input}" ]]; then
     rm -rf -- "${judge_input}"
@@ -174,19 +178,26 @@ docker_server_platform="$(docker version --format '{{.Server.Os}}/{{.Server.Arch
 docker_server_os="${docker_server_platform%%/*}"
 docker_server_architecture="${docker_server_platform##*/}"
 
+environment_manifest_evidence="$(mktemp /tmp/hydra-eval-environment-index.XXXXXX)"
+docker manifest inspect "${environment_image}" > "${environment_manifest_evidence}" \
+  || fail "could not preserve the environment image index"
 manifest_match="$(
-  docker manifest inspect --verbose "${environment_image}" \
-    | python3 -c '
+  python3 - "${environment_manifest_evidence}" \
+    "${docker_server_os}" "${docker_server_architecture}" <<'PY'
 import json
 import sys
+from pathlib import Path
 
-expected_os, expected_architecture = sys.argv[1:]
-document = json.load(sys.stdin)
-entries = document if isinstance(document, list) else [document]
+manifest_path, expected_os, expected_architecture = sys.argv[1:]
+document = json.loads(Path(manifest_path).read_text())
+entries = document.get("manifests") if isinstance(document, dict) else None
+if not isinstance(entries, list):
+    raise SystemExit("environment manifest is not an OCI image index")
 matches = []
-for entry in entries:
-    descriptor = entry.get("Descriptor", entry)
-    platform = descriptor.get("platform") or entry.get("Platform") or {}
+for descriptor in entries:
+    if not isinstance(descriptor, dict):
+        continue
+    platform = descriptor.get("platform") or {}
     if platform.get("os") != expected_os or platform.get("architecture") != expected_architecture:
         continue
     digest = descriptor.get("digest")
@@ -203,7 +214,7 @@ if len(matches) != 1:
         f"expected one manifest for {expected_os}/{expected_architecture}, found {len(matches)}"
     )
 print(*matches[0], sep="\t")
-' "${docker_server_os}" "${docker_server_architecture}"
+PY
 )" || fail "could not resolve the environment child manifest"
 IFS=$'\t' read -r environment_manifest_digest container_platform <<< "${manifest_match}"
 [[ "${environment_manifest_digest}" =~ ^sha256:[a-f0-9]{64}$ ]] \
@@ -319,6 +330,7 @@ result_dir="$(python3 "${repo_root}/scripts/collect_smoke.py" \
   --evaluation-source-bundle "${evaluation_source_bundle}" \
   --repository-root "${repo_root}" \
   --environment-image "${environment_image}" \
+  --environment-manifest "${environment_manifest_evidence}" \
   --harbor-version "${HARBOR_VERSION}" \
   --harbor-python-version "${HARBOR_PYTHON_VERSION}" \
   --harbor-constraints-sha256 "${harbor_constraints_sha256}" \

@@ -28,6 +28,7 @@ class CollectSmokeTest(unittest.TestCase):
             b"gh" + b"p_" + (b"a" * 24),
             b"github_" + b"pat_" + (b"a" * 24),
             b"AKIA" + (b"A" * 16),
+            b"ASIA" + (b"A" * 16),
             b"xoxb-" + (b"a" * 24),
             b"-----BEGIN " + b"PRIVATE KEY-----",
             b'{"access_' + b'token":"' + (b"a" * 24) + b'"}',
@@ -173,6 +174,29 @@ class CollectSmokeTest(unittest.TestCase):
         answer.write_text("42\n")
         return job_dir
 
+    def make_environment_manifest(self, root: Path) -> Path:
+        manifest = root / "environment-manifest.json"
+        write_json(
+            manifest,
+            {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.index.v1+json",
+                "manifests": [
+                    {
+                        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                        "size": 424,
+                        "digest": "sha256:" + "2" * 64,
+                        "platform": {
+                            "architecture": "arm64",
+                            "os": "linux",
+                            "variant": "v8",
+                        },
+                    }
+                ],
+            },
+        )
+        return manifest
+
     def test_builds_append_only_sanitized_result(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -218,6 +242,7 @@ class CollectSmokeTest(unittest.TestCase):
                 evaluation_source_bundle=evaluation_source_bundle,
                 repository_root=repository_root,
                 environment_image=SMOKE_ENVIRONMENT_IMAGE,
+                environment_manifest=self.make_environment_manifest(root),
                 harbor_version="0.22.0",
                 harbor_python_version="3.12.11",
                 harbor_constraints_sha256=harbor_constraints_sha256,
@@ -280,6 +305,9 @@ class CollectSmokeTest(unittest.TestCase):
             )
             self.assertEqual(scorecard["measures"]["judge"]["input_tokens"], 30)
             self.assertTrue((result_dir / "harbor" / "trajectory.json").is_file())
+            self.assertTrue(
+                (result_dir / "harbor" / "environment-manifest.json").is_file()
+            )
             self.assertTrue((result_dir / "harbor" / "oracle-trial-result.json").is_file())
             self.assertTrue((result_dir / "judge" / "metrics.json").is_file())
             self.assertEqual(
@@ -345,6 +373,7 @@ class CollectSmokeTest(unittest.TestCase):
                 evaluation_source_bundle=evaluation_source_bundle,
                 repository_root=repository_root,
                 environment_image=SMOKE_ENVIRONMENT_IMAGE,
+                environment_manifest=self.make_environment_manifest(root),
                 harbor_version="0.22.0",
                 harbor_python_version="3.12.11",
                 harbor_constraints_sha256=harbor_constraints_sha256,
@@ -402,6 +431,7 @@ class CollectSmokeTest(unittest.TestCase):
                 evaluation_source_bundle=evaluation_source_bundle,
                 repository_root=repository_root,
                 environment_image=SMOKE_ENVIRONMENT_IMAGE,
+                environment_manifest=self.make_environment_manifest(root),
                 harbor_version="0.22.0",
                 harbor_python_version="3.12.11",
                 harbor_constraints_sha256=harbor_constraints_sha256,

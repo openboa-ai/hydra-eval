@@ -114,6 +114,7 @@ class SourceBundleTest(unittest.TestCase):
         secrets = (
             "sk-" + ("a" * 24),
             "ACCESS_" + "TOKEN=" + ("a" * 24),
+            "ASIA" + ("A" * 16),
         )
         for secret in secrets:
             with self.subTest(prefix=secret[:8]):

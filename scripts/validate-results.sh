@@ -134,6 +134,7 @@ validate_result() {
       README.md \
       scorecard.json \
       harbor/answer.txt \
+      harbor/environment-manifest.json \
       harbor/job-result.json \
       harbor/oracle-job-result.json \
       harbor/oracle-trial-result.json \
@@ -233,7 +234,7 @@ validate_result() {
     ' "${result_dir}/judge/metrics.json" >/dev/null \
       || fail "judge measures do not match preserved evidence in ${result_label}"
     jq -e '
-      def nonempty: type == "string" and length > 0;
+      def nonempty: type == "string" and test("\\S");
       (.schema_version | type == "string" and startswith("ATIF-v"))
       and (.steps | type == "array")
       and any(.steps[];
@@ -254,6 +255,49 @@ validate_result() {
       )
     ' "${result_dir}/harbor/trajectory.json" >/dev/null \
       || fail "ATIF trajectory lacks a task instruction or agent action in ${result_label}"
+    if ! python3 - "${result_dir}/scorecard.json" \
+      "${result_dir}/harbor/environment-manifest.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+scorecard = json.loads(Path(sys.argv[1]).read_text())
+manifest = json.loads(Path(sys.argv[2]).read_text())
+runtime = scorecard["provenance"]["container_runtime"]
+expected_platform = runtime["platform"]
+expected_digest = runtime["base_manifest_digest"]
+descriptors = manifest.get("manifests") if isinstance(manifest, dict) else None
+if (
+    not isinstance(manifest, dict)
+    or manifest.get("schemaVersion") != 2
+    or not isinstance(descriptors, list)
+):
+    raise SystemExit("environment manifest is not an OCI image index")
+
+matches = []
+for descriptor in descriptors:
+    if not isinstance(descriptor, dict):
+        continue
+    platform = descriptor.get("platform")
+    if not isinstance(platform, dict):
+        continue
+    observed_platform = f"{platform.get('os')}/{platform.get('architecture')}"
+    variant = platform.get("variant")
+    if isinstance(variant, str) and variant:
+        observed_platform += f"/{variant}"
+    if observed_platform == expected_platform:
+        matches.append(descriptor)
+
+if len(matches) != 1:
+    raise SystemExit(
+        f"expected one descriptor for {expected_platform}, found {len(matches)}"
+    )
+if matches[0].get("digest") != expected_digest:
+    raise SystemExit("resolved environment descriptor digest does not match scorecard")
+PY
+    then
+      fail "environment index does not support the recorded container runtime in ${result_label}"
+    fi
     jq -e --slurpfile scorecard "${result_dir}/scorecard.json" '
       .id == $scorecard[0].job_id
       and .stats.n_completed_trials == 1

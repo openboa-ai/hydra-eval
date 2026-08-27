@@ -42,6 +42,7 @@ write_smoke_checksums() {
     for path in \
       README.md \
       harbor/answer.txt \
+      harbor/environment-manifest.json \
       harbor/job-result.json \
       harbor/oracle-job-result.json \
       harbor/oracle-trial-result.json \
@@ -103,6 +104,16 @@ printf '%s\n' '{"id":"00000000-0000-0000-0000-000000000010","stats":{"n_complete
 printf '%s\n' '{"task_name":"openboa/hydra-eval-smoke-question-answer","task_checksum":"task-checksum","agent_info":{"name":"codex","version":"0.147.0","model_info":{"name":"gpt-5.6-luna"}},"started_at":"2026-08-27T00:00:00Z","finished_at":"2026-08-27T00:00:01.500000Z","verifier_result":{"rewards":{"reward":1}},"exception_info":null}' > "${result_dir}/harbor/trial-result.json"
 printf '%s\n' '{"task_name":"openboa/hydra-eval-smoke-question-answer","task_checksum":"task-checksum","agent_info":{"name":"oracle"},"verifier_result":{"rewards":{"reward":1}},"exception_info":null}' > "${result_dir}/harbor/oracle-trial-result.json"
 printf '%s\n' '{"schema_version":"ATIF-v1.7","steps":[{"source":"user","message":"What is 19 + 23?"},{"source":"agent","message":"Writing 42.","tool_calls":[{"function_name":"exec","arguments":{"input":"write 42"}}]}]}' > "${result_dir}/harbor/trajectory.json"
+jq -n '{
+  schemaVersion: 2,
+  mediaType: "application/vnd.oci.image.index.v1+json",
+  manifests: [{
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    size: 424,
+    digest: ("sha256:" + ("e" * 64)),
+    platform: {architecture: "arm64", os: "linux", variant: "v8"}
+  }]
+}' > "${result_dir}/harbor/environment-manifest.json"
 printf '%s\n' '{"answer_exact":1,"reward":1}' > "${result_dir}/harbor/verifier-reward.json"
 mkdir -p "${result_dir}/judge"
 printf '%s\n' '{"elapsed_seconds":0.5,"input_tokens":8,"output_tokens":2}' > "${result_dir}/judge/metrics.json"
@@ -299,6 +310,28 @@ if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
   exit 1
 fi
 mv "${empty_trajectory_dir}" "${fixture_repo}/empty-trajectory-smoke-result"
+
+wrong_runtime_job_id="00000000-0000-0000-0000-000000000017"
+wrong_runtime_dir="${fixture_repo}/results/smoke/${wrong_runtime_job_id}"
+cp -R "${result_dir}" "${wrong_runtime_dir}"
+wrong_runtime_scorecard_tmp="${wrong_runtime_dir}/scorecard.json.tmp"
+jq --arg job_id "${wrong_runtime_job_id}" '
+  .job_id = $job_id
+  | .provenance.container_runtime.platform = "linux/amd64"
+  | .provenance.container_runtime.base_manifest_digest = ("sha256:" + ("f" * 64))
+' "${wrong_runtime_dir}/scorecard.json" > "${wrong_runtime_scorecard_tmp}"
+mv "${wrong_runtime_scorecard_tmp}" "${wrong_runtime_dir}/scorecard.json"
+wrong_runtime_job_tmp="${wrong_runtime_dir}/harbor/job-result.json.tmp"
+jq --arg job_id "${wrong_runtime_job_id}" '.id = $job_id' \
+  "${wrong_runtime_dir}/harbor/job-result.json" > "${wrong_runtime_job_tmp}"
+mv "${wrong_runtime_job_tmp}" "${wrong_runtime_dir}/harbor/job-result.json"
+write_smoke_checksums "${wrong_runtime_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: runtime absent from preserved OCI index was accepted' >&2
+  exit 1
+fi
+mv "${wrong_runtime_dir}" "${fixture_repo}/wrong-runtime-smoke-result"
 
 wrong_tokens_job_id="00000000-0000-0000-0000-000000000006"
 wrong_tokens_dir="${fixture_repo}/results/smoke/${wrong_tokens_job_id}"

@@ -20,7 +20,7 @@ SENSITIVE_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
     re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
-    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"xox[baprs]-[A-Za-z0-9-]{20,}"),
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
     re.compile(r"access[_-]?token", re.IGNORECASE),
@@ -107,6 +107,38 @@ def parse_time(value: Any, label: str) -> datetime:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
         raise EvidenceError(f"invalid {label}: {value}") from exc
+
+
+def validate_environment_manifest(
+    path: Path, expected_platform: str, expected_digest: str
+) -> None:
+    manifest = load_json(path)
+    descriptors = manifest.get("manifests")
+    if manifest.get("schemaVersion") != 2 or not isinstance(descriptors, list):
+        raise EvidenceError("environment manifest is not an OCI image index")
+
+    matches: list[dict[str, Any]] = []
+    for descriptor in descriptors:
+        if not isinstance(descriptor, dict):
+            continue
+        platform = descriptor.get("platform")
+        if not isinstance(platform, dict):
+            continue
+        observed_platform = f"{platform.get('os')}/{platform.get('architecture')}"
+        variant = platform.get("variant")
+        if isinstance(variant, str) and variant:
+            observed_platform += f"/{variant}"
+        if observed_platform == expected_platform:
+            matches.append(descriptor)
+
+    if len(matches) != 1:
+        raise EvidenceError(
+            f"environment index has {len(matches)} descriptors for {expected_platform}"
+        )
+    if matches[0].get("digest") != expected_digest:
+        raise EvidenceError(
+            "environment descriptor digest does not match the recorded container runtime"
+        )
 
 
 def validate_job(job_dir: Path, expected_agent: str) -> tuple[dict[str, Any], Path, dict[str, Any]]:
@@ -307,6 +339,11 @@ def build_evidence(args: argparse.Namespace) -> Path:
         raise EvidenceError("AI judge did not pass")
     if not isinstance(judge.get("reason"), str) or not judge["reason"].strip():
         raise EvidenceError("AI judge reason is empty")
+    validate_environment_manifest(
+        args.environment_manifest,
+        args.container_platform,
+        args.environment_manifest_digest,
+    )
 
     solver_stats = job_result["stats"]
     for field in ("n_input_tokens", "n_output_tokens"):
@@ -427,6 +464,10 @@ def build_evidence(args: argparse.Namespace) -> Path:
         copy_checked(reward_path, stage / "harbor" / "verifier-reward.json")
         copy_checked(answer_path, stage / "harbor" / "answer.txt")
         write_json(stage / "harbor" / "trajectory.json", public_trajectory)
+        copy_checked(
+            args.environment_manifest,
+            stage / "harbor" / "environment-manifest.json",
+        )
         copy_checked(args.judge_result, stage / "judge" / "result.json")
         write_json(stage / "judge" / "metrics.json", judge_measures)
         copy_checked(args.evaluation_source_bundle, stage / "source" / "evaluation.bundle")
@@ -454,7 +495,7 @@ This record proves that the minimal Hydra Eval plumbing completed one Oracle ref
 - Judge: `codex {args.judge_agent_version}` with `{args.judge_model}` at `{args.judge_reasoning}` reasoning
 - Actual billed cost: `unknown` (ChatGPT subscription authentication)
 
-See `scorecard.json` for separate checks, timing, token use, and the API-equivalent estimate reported by Harbor. Selected job evidence and the sanitized public trajectory are preserved under `harbor/`; the structured judge result and sanitized timing/usage evidence are under `judge/`. The exact evaluation commit can be recovered from `source/evaluation.bundle` even after a squash merge. Raw jobs and judge events remain local under the ignored `jobs/` directory.
+See `scorecard.json` for separate checks, timing, token use, and the API-equivalent estimate reported by Harbor. Selected job evidence, the native OCI image index, and the sanitized public trajectory are preserved under `harbor/`; the structured judge result and sanitized timing/usage evidence are under `judge/`. The exact evaluation commit can be recovered from `source/evaluation.bundle` even after a squash merge. Raw jobs and judge events remain local under the ignored `jobs/` directory.
 """
         (stage / "README.md").write_text(readme)
 
@@ -486,6 +527,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--evaluation-source-bundle", type=Path, required=True)
     parser.add_argument("--repository-root", type=Path, required=True)
     parser.add_argument("--environment-image", required=True)
+    parser.add_argument("--environment-manifest", type=Path, required=True)
     parser.add_argument("--harbor-version", required=True)
     parser.add_argument("--harbor-python-version", required=True)
     parser.add_argument("--harbor-constraints-sha256", required=True)
