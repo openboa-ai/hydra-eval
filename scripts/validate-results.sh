@@ -58,6 +58,7 @@ validate_evaluation_bundle() {
   local evaluation_base_revision="$4"
   local evaluation_bundle_sha256="$5"
   local expected_file_sha256="${6:-}"
+  local expected_docker_image="${7:-}"
   local bundle_path="${result_dir}/source/evaluation.bundle"
   local expected_prerequisite="${evaluation_base_revision}"
   local checker_args=()
@@ -80,6 +81,9 @@ validate_evaluation_bundle() {
   )
   if [[ -n "${expected_file_sha256}" ]]; then
     checker_args+=(--expected-file-sha256 "${expected_file_sha256}")
+  fi
+  if [[ -n "${expected_docker_image}" ]]; then
+    checker_args+=(--expected-docker-image "${expected_docker_image}")
   fi
   python3 "${checker_args[@]}" >/dev/null \
     || fail "evaluation source bundle provenance or object safety failed in ${result_label}"
@@ -117,6 +121,7 @@ validate_result() {
   local hydra_revision=""
   local hydra_bundle_sha256=""
   local harbor_constraints_sha256=""
+  local environment_image=""
 
   validation_index=$((validation_index + 1))
   result_id="$(basename "${result_dir}")"
@@ -143,7 +148,7 @@ validate_result() {
     done
     jq -e --arg job_id "${result_id}" '
       def matches($pattern): type == "string" and test($pattern);
-      def nonempty: type == "string" and length > 0;
+      def nonempty: type == "string" and test("\\S");
       def nonnegative_number: type == "number" and . >= 0;
       def nonnegative_integer: type == "number" and . >= 0 and floor == .;
       .kind == "evaluator_smoke"
@@ -205,9 +210,11 @@ validate_result() {
     evaluation_base_revision="$(jq -r '.provenance.evaluation_base_revision' "${result_dir}/scorecard.json")"
     evaluation_bundle_sha256="$(jq -r '.provenance.evaluation_bundle_sha256' "${result_dir}/scorecard.json")"
     harbor_constraints_sha256="$(jq -r '.provenance.harbor_constraints_sha256' "${result_dir}/scorecard.json")"
+    environment_image="$(jq -r '.provenance.environment_image' "${result_dir}/scorecard.json")"
     validate_evaluation_bundle "${result_dir}" "${result_label}" \
       "${evaluation_revision}" "${evaluation_base_revision}" "${evaluation_bundle_sha256}" \
-      "config/harbor-0.22.0.constraints=${harbor_constraints_sha256}"
+      "config/harbor-0.22.0.constraints=${harbor_constraints_sha256}" \
+      "tasks/smoke-question-answer/environment/Dockerfile=${environment_image}"
     cmp -s "${result_dir}/harbor/answer.txt" <(printf '42\n') \
       || fail "answer is not exactly 42 followed by newline in ${result_label}"
     jq -e --slurpfile scorecard "${result_dir}/scorecard.json" '
@@ -226,9 +233,27 @@ validate_result() {
     ' "${result_dir}/judge/metrics.json" >/dev/null \
       || fail "judge measures do not match preserved evidence in ${result_label}"
     jq -e '
-      .schema_version | type == "string" and startswith("ATIF-v")
+      def nonempty: type == "string" and length > 0;
+      (.schema_version | type == "string" and startswith("ATIF-v"))
+      and (.steps | type == "array")
+      and any(.steps[];
+        type == "object"
+        and .source == "user"
+        and (.message | nonempty)
+      )
+      and any(.steps[];
+        type == "object"
+        and .source == "agent"
+        and (.tool_calls | type == "array" and length > 0)
+        and any(.tool_calls[];
+          type == "object"
+          and (.function_name | nonempty)
+          and has("arguments")
+          and .arguments != null
+        )
+      )
     ' "${result_dir}/harbor/trajectory.json" >/dev/null \
-      || fail "missing ATIF trajectory evidence in ${result_label}"
+      || fail "ATIF trajectory lacks a task instruction or agent action in ${result_label}"
     jq -e --slurpfile scorecard "${result_dir}/scorecard.json" '
       .id == $scorecard[0].job_id
       and .stats.n_completed_trials == 1

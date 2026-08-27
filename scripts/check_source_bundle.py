@@ -148,12 +148,61 @@ def check_expected_files(
             )
 
 
+def check_expected_docker_images(
+    repository: Path, revision: str, expected_images: dict[str, str]
+) -> None:
+    for source_path, expected_image in sorted(expected_images.items()):
+        if (
+            not re.fullmatch(r"[A-Za-z0-9._/-]+", source_path)
+            or source_path.startswith("/")
+            or ".." in Path(source_path).parts
+        ):
+            raise BundleError(f"invalid expected Dockerfile path: {source_path!r}")
+        if not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._/:+-]*@sha256:[0-9a-f]{64}",
+            expected_image,
+        ):
+            raise BundleError(f"invalid expected Docker image: {expected_image!r}")
+
+        content = run_git(
+            ["show", f"{revision}:{source_path}"], repository=repository
+        )
+        try:
+            dockerfile = content.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise BundleError(f"bundled {source_path} is not UTF-8") from exc
+
+        from_images: list[str] = []
+        for line in dockerfile.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            match = re.fullmatch(
+                r"FROM\s+([^\s]+)(?:\s+AS\s+[^\s]+)?",
+                stripped,
+                flags=re.IGNORECASE,
+            )
+            if match:
+                from_images.append(match.group(1))
+            elif re.match(r"FROM\s", stripped, flags=re.IGNORECASE):
+                raise BundleError(
+                    f"unsupported FROM instruction in bundled {source_path}"
+                )
+
+        if from_images != [expected_image]:
+            raise BundleError(
+                f"bundled {source_path} must contain exactly FROM {expected_image}; "
+                f"found {from_images}"
+            )
+
+
 def check_bundle(
     bundle: Path,
     revision: str,
     expected_prerequisite: str | None,
     repository: Path | None,
     expected_files: dict[str, str] | None = None,
+    expected_docker_images: dict[str, str] | None = None,
 ) -> dict[str, object]:
     if not bundle.is_file():
         raise BundleError(f"bundle does not exist: {bundle}")
@@ -225,12 +274,18 @@ def check_bundle(
         check_expected_files(
             inspection_repo, revision, expected_files if expected_files is not None else {}
         )
+        check_expected_docker_images(
+            inspection_repo,
+            revision,
+            expected_docker_images if expected_docker_images is not None else {},
+        )
 
     return {
         "revision": revision,
         "prerequisite": expected_prerequisite,
         "introduced_object_count": len(introduced),
         "verified_files": sorted((expected_files or {}).keys()),
+        "verified_docker_images": dict(sorted((expected_docker_images or {}).items())),
     }
 
 
@@ -250,6 +305,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=[],
         metavar="PATH=SHA256",
     )
+    parser.add_argument(
+        "--expected-docker-image",
+        action="append",
+        default=[],
+        metavar="PATH=IMAGE@SHA256",
+    )
     return parser.parse_args(argv)
 
 
@@ -268,6 +329,16 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         expected_files[source_path] = digest
+    expected_docker_images: dict[str, str] = {}
+    for item in args.expected_docker_image:
+        source_path, separator, image = item.partition("=")
+        if not separator or not source_path or source_path in expected_docker_images:
+            print(
+                f"check-source-bundle: invalid or duplicate expected Docker image: {item!r}",
+                file=sys.stderr,
+            )
+            return 1
+        expected_docker_images[source_path] = image
     try:
         result = check_bundle(
             args.bundle,
@@ -275,6 +346,7 @@ def main(argv: list[str] | None = None) -> int:
             prerequisite,
             args.repository,
             expected_files,
+            expected_docker_images,
         )
     except BundleError as exc:
         print(f"check-source-bundle: {exc}", file=sys.stderr)

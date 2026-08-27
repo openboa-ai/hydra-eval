@@ -23,7 +23,15 @@ mkdir -p "${fixture_repo}/config"
 cp "${source_root}/config/harbor-0.22.0.constraints" \
   "${fixture_repo}/config/harbor-0.22.0.constraints"
 fixture_constraints_sha256="$(shasum -a 256 "${fixture_repo}/config/harbor-0.22.0.constraints" | awk '{print $1}')"
-git -C "${fixture_repo}" add evaluator-source.txt config/harbor-0.22.0.constraints
+mkdir -p "${fixture_repo}/tasks/smoke-question-answer/environment"
+cp "${source_root}/tasks/smoke-question-answer/environment/Dockerfile" \
+  "${fixture_repo}/tasks/smoke-question-answer/environment/Dockerfile"
+fixture_environment_image="$(awk 'toupper($1) == "FROM" {print $2; exit}' \
+  "${fixture_repo}/tasks/smoke-question-answer/environment/Dockerfile")"
+git -C "${fixture_repo}" add \
+  evaluator-source.txt \
+  config/harbor-0.22.0.constraints \
+  tasks/smoke-question-answer/environment/Dockerfile
 git -C "${fixture_repo}" commit -q -m evaluator-source
 evaluation_revision="$(git -C "${fixture_repo}" rev-parse HEAD)"
 
@@ -79,12 +87,14 @@ scorecard_tmp="${result_dir}/scorecard.json.tmp"
 jq --arg revision "${evaluation_revision}" \
   --arg base_revision "${repository_base_revision}" \
   --arg bundle_sha256 "${evaluation_bundle_sha256}" \
-  --arg constraints_sha256 "${fixture_constraints_sha256}" '
+  --arg constraints_sha256 "${fixture_constraints_sha256}" \
+  --arg environment_image "${fixture_environment_image}" '
     .provenance.evaluation_revision = $revision
     | .provenance.evidence_collector_revision = $revision
     | .provenance.evaluation_base_revision = $base_revision
     | .provenance.evaluation_bundle_sha256 = $bundle_sha256
     | .provenance.harbor_constraints_sha256 = $constraints_sha256
+    | .provenance.environment_image = $environment_image
   ' \
   "${result_dir}/scorecard.json" > "${scorecard_tmp}"
 mv "${scorecard_tmp}" "${result_dir}/scorecard.json"
@@ -92,7 +102,7 @@ printf '%s\n' '{"id":"00000000-0000-0000-0000-000000000001","stats":{"n_complete
 printf '%s\n' '{"id":"00000000-0000-0000-0000-000000000010","stats":{"n_completed_trials":1,"n_errored_trials":0}}' > "${result_dir}/harbor/oracle-job-result.json"
 printf '%s\n' '{"task_name":"openboa/hydra-eval-smoke-question-answer","task_checksum":"task-checksum","agent_info":{"name":"codex","version":"0.147.0","model_info":{"name":"gpt-5.6-luna"}},"started_at":"2026-08-27T00:00:00Z","finished_at":"2026-08-27T00:00:01.500000Z","verifier_result":{"rewards":{"reward":1}},"exception_info":null}' > "${result_dir}/harbor/trial-result.json"
 printf '%s\n' '{"task_name":"openboa/hydra-eval-smoke-question-answer","task_checksum":"task-checksum","agent_info":{"name":"oracle"},"verifier_result":{"rewards":{"reward":1}},"exception_info":null}' > "${result_dir}/harbor/oracle-trial-result.json"
-printf '%s\n' '{"schema_version":"ATIF-v1.7","steps":[]}' > "${result_dir}/harbor/trajectory.json"
+printf '%s\n' '{"schema_version":"ATIF-v1.7","steps":[{"source":"user","message":"What is 19 + 23?"},{"source":"agent","message":"Writing 42.","tool_calls":[{"function_name":"exec","arguments":{"input":"write 42"}}]}]}' > "${result_dir}/harbor/trajectory.json"
 printf '%s\n' '{"answer_exact":1,"reward":1}' > "${result_dir}/harbor/verifier-reward.json"
 mkdir -p "${result_dir}/judge"
 printf '%s\n' '{"elapsed_seconds":0.5,"input_tokens":8,"output_tokens":2}' > "${result_dir}/judge/metrics.json"
@@ -248,6 +258,47 @@ if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
   exit 1
 fi
 mv "${wrong_constraints_dir}" "${fixture_repo}/wrong-constraints-smoke-result"
+
+wrong_image_job_id="00000000-0000-0000-0000-000000000015"
+wrong_image_dir="${fixture_repo}/results/smoke/${wrong_image_job_id}"
+cp -R "${result_dir}" "${wrong_image_dir}"
+wrong_image_scorecard_tmp="${wrong_image_dir}/scorecard.json.tmp"
+jq --arg job_id "${wrong_image_job_id}" \
+  '.job_id = $job_id | .provenance.environment_image = ("ubuntu:24.04@sha256:" + ("a" * 64))' \
+  "${wrong_image_dir}/scorecard.json" > "${wrong_image_scorecard_tmp}"
+mv "${wrong_image_scorecard_tmp}" "${wrong_image_dir}/scorecard.json"
+wrong_image_job_tmp="${wrong_image_dir}/harbor/job-result.json.tmp"
+jq --arg job_id "${wrong_image_job_id}" '.id = $job_id' \
+  "${wrong_image_dir}/harbor/job-result.json" > "${wrong_image_job_tmp}"
+mv "${wrong_image_job_tmp}" "${wrong_image_dir}/harbor/job-result.json"
+write_smoke_checksums "${wrong_image_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: environment image diverging from bundled Dockerfile was accepted' >&2
+  exit 1
+fi
+mv "${wrong_image_dir}" "${fixture_repo}/wrong-image-smoke-result"
+
+empty_trajectory_job_id="00000000-0000-0000-0000-000000000016"
+empty_trajectory_dir="${fixture_repo}/results/smoke/${empty_trajectory_job_id}"
+cp -R "${result_dir}" "${empty_trajectory_dir}"
+empty_trajectory_scorecard_tmp="${empty_trajectory_dir}/scorecard.json.tmp"
+jq --arg job_id "${empty_trajectory_job_id}" '.job_id = $job_id' \
+  "${empty_trajectory_dir}/scorecard.json" > "${empty_trajectory_scorecard_tmp}"
+mv "${empty_trajectory_scorecard_tmp}" "${empty_trajectory_dir}/scorecard.json"
+empty_trajectory_job_tmp="${empty_trajectory_dir}/harbor/job-result.json.tmp"
+jq --arg job_id "${empty_trajectory_job_id}" '.id = $job_id' \
+  "${empty_trajectory_dir}/harbor/job-result.json" > "${empty_trajectory_job_tmp}"
+mv "${empty_trajectory_job_tmp}" "${empty_trajectory_dir}/harbor/job-result.json"
+printf '%s\n' '{"schema_version":"ATIF-v1.7","steps":[]}' \
+  > "${empty_trajectory_dir}/harbor/trajectory.json"
+write_smoke_checksums "${empty_trajectory_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: empty ATIF trajectory was accepted' >&2
+  exit 1
+fi
+mv "${empty_trajectory_dir}" "${fixture_repo}/empty-trajectory-smoke-result"
 
 wrong_tokens_job_id="00000000-0000-0000-0000-000000000006"
 wrong_tokens_dir="${fixture_repo}/results/smoke/${wrong_tokens_job_id}"

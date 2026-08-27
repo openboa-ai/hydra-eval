@@ -44,7 +44,16 @@ class SourceBundleTest(unittest.TestCase):
             root = Path(temporary)
             repository, base_revision = self.make_repository(root)
             (repository / "evaluator.txt").write_text("safe evaluator\n")
-            self.git(repository, "add", "evaluator.txt")
+            dockerfile = repository / "tasks" / "smoke" / "environment" / "Dockerfile"
+            dockerfile.parent.mkdir(parents=True)
+            expected_image = "ubuntu:24.04@sha256:" + "a" * 64
+            dockerfile.write_text(f"FROM {expected_image}\n\nWORKDIR /app\n")
+            self.git(
+                repository,
+                "add",
+                "evaluator.txt",
+                str(dockerfile.relative_to(repository)),
+            )
             self.git(repository, "commit", "--quiet", "-m", "evaluator")
             evaluation_revision = self.git(repository, "rev-parse", "HEAD")
             bundle = root / "evaluation.bundle"
@@ -64,11 +73,16 @@ class SourceBundleTest(unittest.TestCase):
                 base_revision,
                 repository,
                 {"evaluator.txt": evaluator_sha256},
+                {"tasks/smoke/environment/Dockerfile": expected_image},
             )
             self.assertEqual(result["revision"], evaluation_revision)
             self.assertEqual(result["prerequisite"], base_revision)
             self.assertGreater(result["introduced_object_count"], 0)
             self.assertEqual(result["verified_files"], ["evaluator.txt"])
+            self.assertEqual(
+                result["verified_docker_images"],
+                {"tasks/smoke/environment/Dockerfile": expected_image},
+            )
 
             with self.assertRaises(check_source_bundle.BundleError):
                 check_source_bundle.check_bundle(
@@ -81,6 +95,19 @@ class SourceBundleTest(unittest.TestCase):
                     base_revision,
                     repository,
                     {"evaluator.txt": "0" * 64},
+                )
+            with self.assertRaises(check_source_bundle.BundleError):
+                check_source_bundle.check_bundle(
+                    bundle,
+                    evaluation_revision,
+                    base_revision,
+                    repository,
+                    {"evaluator.txt": evaluator_sha256},
+                    {
+                        "tasks/smoke/environment/Dockerfile": (
+                            "ubuntu:24.04@sha256:" + "b" * 64
+                        )
+                    },
                 )
 
     def test_rejects_secret_in_deleted_blob(self) -> None:

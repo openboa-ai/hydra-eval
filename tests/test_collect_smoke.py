@@ -13,6 +13,7 @@ SPEC = importlib.util.spec_from_file_location("collect_smoke", MODULE_PATH)
 assert SPEC and SPEC.loader
 collect_smoke = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(collect_smoke)
+SMOKE_ENVIRONMENT_IMAGE = "ubuntu:24.04@sha256:" + "e" * 64
 
 
 def write_json(path: Path, value: object) -> None:
@@ -35,6 +36,22 @@ class CollectSmokeTest(unittest.TestCase):
             with self.subTest(prefix=credential[:8]):
                 with self.assertRaises(collect_smoke.EvidenceError):
                     collect_smoke.check_sensitive("fixture", credential)
+
+    def test_rejects_trajectory_without_instruction_and_action(self) -> None:
+        invalid_trajectories = (
+            {"schema_version": "ATIF-v1.7", "steps": []},
+            {
+                "schema_version": "ATIF-v1.7",
+                "steps": [
+                    {"source": "user", "message": "What is 19 + 23?"},
+                    {"source": "agent", "message": "The answer is 42."},
+                ],
+            },
+        )
+        for trajectory in invalid_trajectories:
+            with self.subTest(trajectory=trajectory):
+                with self.assertRaises(collect_smoke.EvidenceError):
+                    collect_smoke.sanitize_trajectory(trajectory, "public-session")
 
     def make_evaluation_bundle(
         self, root: Path
@@ -64,7 +81,21 @@ class CollectSmokeTest(unittest.TestCase):
         (repository / "config" / "harbor-0.22.0.constraints").write_text(
             "harbor==0.22.0\n"
         )
-        git("add", "evaluator.txt", "config/harbor-0.22.0.constraints")
+        dockerfile = (
+            repository
+            / "tasks"
+            / "smoke-question-answer"
+            / "environment"
+            / "Dockerfile"
+        )
+        dockerfile.parent.mkdir(parents=True)
+        dockerfile.write_text(f"FROM {SMOKE_ENVIRONMENT_IMAGE}\n\nWORKDIR /app\n")
+        git(
+            "add",
+            "evaluator.txt",
+            "config/harbor-0.22.0.constraints",
+            "tasks/smoke-question-answer/environment/Dockerfile",
+        )
         git("commit", "--quiet", "-m", "evaluator")
         evaluation_revision = git("rev-parse", "HEAD")
         git("bundle", "create", str(bundle), "HEAD", f"^{base_revision}")
@@ -186,7 +217,7 @@ class CollectSmokeTest(unittest.TestCase):
                 evaluation_base_revision=evaluation_base_revision,
                 evaluation_source_bundle=evaluation_source_bundle,
                 repository_root=repository_root,
-                environment_image="ubuntu:24.04@sha256:" + "e" * 64,
+                environment_image=SMOKE_ENVIRONMENT_IMAGE,
                 harbor_version="0.22.0",
                 harbor_python_version="3.12.11",
                 harbor_constraints_sha256=harbor_constraints_sha256,
@@ -224,7 +255,7 @@ class CollectSmokeTest(unittest.TestCase):
             )
             self.assertEqual(
                 scorecard["provenance"]["environment_image"],
-                "ubuntu:24.04@sha256:" + "e" * 64,
+                SMOKE_ENVIRONMENT_IMAGE,
             )
             self.assertEqual(scorecard["provenance"]["harbor_python_version"], "3.12.11")
             self.assertEqual(
@@ -313,7 +344,7 @@ class CollectSmokeTest(unittest.TestCase):
                 evaluation_base_revision=evaluation_base_revision,
                 evaluation_source_bundle=evaluation_source_bundle,
                 repository_root=repository_root,
-                environment_image="ubuntu:24.04@sha256:" + "e" * 64,
+                environment_image=SMOKE_ENVIRONMENT_IMAGE,
                 harbor_version="0.22.0",
                 harbor_python_version="3.12.11",
                 harbor_constraints_sha256=harbor_constraints_sha256,
@@ -370,7 +401,7 @@ class CollectSmokeTest(unittest.TestCase):
                 evaluation_base_revision=evaluation_base_revision,
                 evaluation_source_bundle=evaluation_source_bundle,
                 repository_root=repository_root,
-                environment_image="ubuntu:24.04@sha256:" + "e" * 64,
+                environment_image=SMOKE_ENVIRONMENT_IMAGE,
                 harbor_version="0.22.0",
                 harbor_python_version="3.12.11",
                 harbor_constraints_sha256=harbor_constraints_sha256,

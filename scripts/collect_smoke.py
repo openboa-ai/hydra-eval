@@ -176,6 +176,11 @@ def check_evaluation_bundle(args: argparse.Namespace) -> None:
             str(args.repository_root),
             "--expected-file-sha256",
             f"config/harbor-0.22.0.constraints={args.harbor_constraints_sha256}",
+            "--expected-docker-image",
+            (
+                "tasks/smoke-question-answer/environment/Dockerfile="
+                f"{args.environment_image}"
+            ),
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -189,7 +194,10 @@ def check_evaluation_bundle(args: argparse.Namespace) -> None:
 
 def sanitize_trajectory(trajectory: dict[str, Any], public_session_id: str) -> dict[str, Any]:
     public_steps: list[dict[str, Any]] = []
-    for step in trajectory.get("steps", []):
+    raw_steps = trajectory.get("steps")
+    if not isinstance(raw_steps, list):
+        raise EvidenceError("trajectory steps are not an array")
+    for step in raw_steps:
         if not isinstance(step, dict) or step.get("source") == "system":
             continue
         message = step.get("message")
@@ -216,9 +224,25 @@ def sanitize_trajectory(trajectory: dict[str, Any], public_session_id: str) -> d
             public_step["usage"] = step["usage"]
         public_steps.append(public_step)
 
-    if not any(step.get("source") == "user" for step in public_steps):
+    if not any(
+        step.get("source") == "user"
+        and isinstance(step.get("message"), str)
+        and bool(step["message"].strip())
+        for step in public_steps
+    ):
         raise EvidenceError("sanitized trajectory has no task instruction")
-    if not any(step.get("source") == "agent" for step in public_steps):
+    if not any(
+        step.get("source") == "agent"
+        and isinstance(step.get("tool_calls"), list)
+        and any(
+            isinstance(call, dict)
+            and isinstance(call.get("function_name"), str)
+            and bool(call["function_name"].strip())
+            and call.get("arguments") is not None
+            for call in step["tool_calls"]
+        )
+        for step in public_steps
+    ):
         raise EvidenceError("sanitized trajectory has no agent action")
 
     agent = trajectory.get("agent") or {}
