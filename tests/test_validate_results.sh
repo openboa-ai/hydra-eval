@@ -19,7 +19,11 @@ git -C "${fixture_repo}" commit -q -m repository-base
 repository_base_revision="$(git -C "${fixture_repo}" rev-parse HEAD)"
 
 printf '%s\n' 'evaluator source' > "${fixture_repo}/evaluator-source.txt"
-git -C "${fixture_repo}" add evaluator-source.txt
+mkdir -p "${fixture_repo}/config"
+cp "${source_root}/config/harbor-0.22.0.constraints" \
+  "${fixture_repo}/config/harbor-0.22.0.constraints"
+fixture_constraints_sha256="$(shasum -a 256 "${fixture_repo}/config/harbor-0.22.0.constraints" | awk '{print $1}')"
+git -C "${fixture_repo}" add evaluator-source.txt config/harbor-0.22.0.constraints
 git -C "${fixture_repo}" commit -q -m evaluator-source
 evaluation_revision="$(git -C "${fixture_repo}" rev-parse HEAD)"
 
@@ -74,11 +78,13 @@ evaluation_bundle_sha256="$(shasum -a 256 "${result_dir}/source/evaluation.bundl
 scorecard_tmp="${result_dir}/scorecard.json.tmp"
 jq --arg revision "${evaluation_revision}" \
   --arg base_revision "${repository_base_revision}" \
-  --arg bundle_sha256 "${evaluation_bundle_sha256}" '
+  --arg bundle_sha256 "${evaluation_bundle_sha256}" \
+  --arg constraints_sha256 "${fixture_constraints_sha256}" '
     .provenance.evaluation_revision = $revision
     | .provenance.evidence_collector_revision = $revision
     | .provenance.evaluation_base_revision = $base_revision
     | .provenance.evaluation_bundle_sha256 = $bundle_sha256
+    | .provenance.harbor_constraints_sha256 = $constraints_sha256
   ' \
   "${result_dir}/scorecard.json" > "${scorecard_tmp}"
 mv "${scorecard_tmp}" "${result_dir}/scorecard.json"
@@ -222,6 +228,26 @@ if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
   exit 1
 fi
 mv "${wrong_base_dir}" "${fixture_repo}/wrong-base-smoke-result"
+
+wrong_constraints_job_id="00000000-0000-0000-0000-000000000014"
+wrong_constraints_dir="${fixture_repo}/results/smoke/${wrong_constraints_job_id}"
+cp -R "${result_dir}" "${wrong_constraints_dir}"
+wrong_constraints_scorecard_tmp="${wrong_constraints_dir}/scorecard.json.tmp"
+jq --arg job_id "${wrong_constraints_job_id}" \
+  '.job_id = $job_id | .provenance.harbor_constraints_sha256 = ("a" * 64)' \
+  "${wrong_constraints_dir}/scorecard.json" > "${wrong_constraints_scorecard_tmp}"
+mv "${wrong_constraints_scorecard_tmp}" "${wrong_constraints_dir}/scorecard.json"
+wrong_constraints_job_tmp="${wrong_constraints_dir}/harbor/job-result.json.tmp"
+jq --arg job_id "${wrong_constraints_job_id}" '.id = $job_id' \
+  "${wrong_constraints_dir}/harbor/job-result.json" > "${wrong_constraints_job_tmp}"
+mv "${wrong_constraints_job_tmp}" "${wrong_constraints_dir}/harbor/job-result.json"
+write_smoke_checksums "${wrong_constraints_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: constraints digest diverging from bundled source was accepted' >&2
+  exit 1
+fi
+mv "${wrong_constraints_dir}" "${fixture_repo}/wrong-constraints-smoke-result"
 
 wrong_tokens_job_id="00000000-0000-0000-0000-000000000006"
 wrong_tokens_dir="${fixture_repo}/results/smoke/${wrong_tokens_job_id}"

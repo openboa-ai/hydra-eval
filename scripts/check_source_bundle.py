@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -122,11 +123,37 @@ def inspect_objects(repository: Path, object_ids: set[str]) -> None:
         check_secrets(f"bundled {kind} object {object_id}", content)
 
 
+def check_expected_files(
+    repository: Path, revision: str, expected_files: dict[str, str]
+) -> None:
+    for source_path, expected_digest in sorted(expected_files.items()):
+        if (
+            not re.fullmatch(r"[A-Za-z0-9._/-]+", source_path)
+            or source_path.startswith("/")
+            or ".." in Path(source_path).parts
+        ):
+            raise BundleError(f"invalid expected source path: {source_path!r}")
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+            raise BundleError(
+                f"invalid expected SHA-256 for {source_path}: {expected_digest!r}"
+            )
+        content = run_git(
+            ["show", f"{revision}:{source_path}"], repository=repository
+        )
+        observed_digest = hashlib.sha256(content).hexdigest()
+        if observed_digest != expected_digest:
+            raise BundleError(
+                f"bundled {source_path} SHA-256 is {observed_digest}, "
+                f"expected {expected_digest}"
+            )
+
+
 def check_bundle(
     bundle: Path,
     revision: str,
     expected_prerequisite: str | None,
     repository: Path | None,
+    expected_files: dict[str, str] | None = None,
 ) -> dict[str, object]:
     if not bundle.is_file():
         raise BundleError(f"bundle does not exist: {bundle}")
@@ -195,11 +222,15 @@ def check_bundle(
         after = all_objects(inspection_repo)
         introduced = after - before
         inspect_objects(inspection_repo, introduced)
+        check_expected_files(
+            inspection_repo, revision, expected_files if expected_files is not None else {}
+        )
 
     return {
         "revision": revision,
         "prerequisite": expected_prerequisite,
         "introduced_object_count": len(introduced),
+        "verified_files": sorted((expected_files or {}).keys()),
     }
 
 
@@ -213,6 +244,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="The exact prerequisite SHA, or 'none' for a self-contained bundle.",
     )
     parser.add_argument("--repository", type=Path)
+    parser.add_argument(
+        "--expected-file-sha256",
+        action="append",
+        default=[],
+        metavar="PATH=SHA256",
+    )
     return parser.parse_args(argv)
 
 
@@ -221,8 +258,24 @@ def main(argv: list[str] | None = None) -> int:
     prerequisite = (
         None if args.expected_prerequisite == "none" else args.expected_prerequisite
     )
+    expected_files: dict[str, str] = {}
+    for item in args.expected_file_sha256:
+        source_path, separator, digest = item.rpartition("=")
+        if not separator or not source_path or source_path in expected_files:
+            print(
+                f"check-source-bundle: invalid or duplicate expected file: {item!r}",
+                file=sys.stderr,
+            )
+            return 1
+        expected_files[source_path] = digest
     try:
-        result = check_bundle(args.bundle, args.revision, prerequisite, args.repository)
+        result = check_bundle(
+            args.bundle,
+            args.revision,
+            prerequisite,
+            args.repository,
+            expected_files,
+        )
     except BundleError as exc:
         print(f"check-source-bundle: {exc}", file=sys.stderr)
         return 1

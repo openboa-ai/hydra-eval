@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import subprocess
 import tempfile
 import unittest
@@ -55,17 +56,31 @@ class SourceBundleTest(unittest.TestCase):
                 "HEAD",
                 f"^{base_revision}",
             )
+            evaluator_sha256 = hashlib.sha256(b"safe evaluator\n").hexdigest()
 
             result = check_source_bundle.check_bundle(
-                bundle, evaluation_revision, base_revision, repository
+                bundle,
+                evaluation_revision,
+                base_revision,
+                repository,
+                {"evaluator.txt": evaluator_sha256},
             )
             self.assertEqual(result["revision"], evaluation_revision)
             self.assertEqual(result["prerequisite"], base_revision)
             self.assertGreater(result["introduced_object_count"], 0)
+            self.assertEqual(result["verified_files"], ["evaluator.txt"])
 
             with self.assertRaises(check_source_bundle.BundleError):
                 check_source_bundle.check_bundle(
                     bundle, evaluation_revision, evaluation_revision, repository
+                )
+            with self.assertRaises(check_source_bundle.BundleError):
+                check_source_bundle.check_bundle(
+                    bundle,
+                    evaluation_revision,
+                    base_revision,
+                    repository,
+                    {"evaluator.txt": "0" * 64},
                 )
 
     def test_rejects_secret_in_deleted_blob(self) -> None:

@@ -230,7 +230,8 @@ python3 "${source_bundle_checker}" \
   --bundle "${evaluation_source_bundle}" \
   --revision "${evaluation_revision}" \
   --expected-prerequisite "${evaluation_base_revision}" \
-  --repository "${repo_root}" >/dev/null \
+  --repository "${repo_root}" \
+  --expected-file-sha256 "config/harbor-0.22.0.constraints=${harbor_constraints_sha256}" >/dev/null \
   || fail "evaluation source bundle failed object-level safety and provenance checks"
 run_id="$(date -u +%Y%m%dT%H%M%SZ)-${evaluation_revision:0:12}"
 oracle_job_name="smoke-oracle-${run_id}"

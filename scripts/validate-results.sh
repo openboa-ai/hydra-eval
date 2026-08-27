@@ -57,8 +57,10 @@ validate_evaluation_bundle() {
   local evaluation_revision="$3"
   local evaluation_base_revision="$4"
   local evaluation_bundle_sha256="$5"
+  local expected_file_sha256="${6:-}"
   local bundle_path="${result_dir}/source/evaluation.bundle"
   local expected_prerequisite="${evaluation_base_revision}"
+  local checker_args=()
 
   [[ -f "${bundle_path}" ]] || fail "missing source/evaluation.bundle in ${result_label}"
   [[ -x "${source_bundle_checker}" ]] || fail "missing executable source-bundle checker"
@@ -69,11 +71,17 @@ validate_evaluation_bundle() {
   fi
   [[ "$(shasum -a 256 "${bundle_path}" | awk '{print $1}')" == "${evaluation_bundle_sha256}" ]] \
     || fail "evaluation source bundle digest does not match the scorecard in ${result_label}"
-  python3 "${source_bundle_checker}" \
-    --bundle "${bundle_path}" \
-    --revision "${evaluation_revision}" \
-    --expected-prerequisite "${expected_prerequisite}" \
-    --repository "${repo_root}" >/dev/null \
+  checker_args=(
+    "${source_bundle_checker}"
+    --bundle "${bundle_path}"
+    --revision "${evaluation_revision}"
+    --expected-prerequisite "${expected_prerequisite}"
+    --repository "${repo_root}"
+  )
+  if [[ -n "${expected_file_sha256}" ]]; then
+    checker_args+=(--expected-file-sha256 "${expected_file_sha256}")
+  fi
+  python3 "${checker_args[@]}" >/dev/null \
     || fail "evaluation source bundle provenance or object safety failed in ${result_label}"
 }
 
@@ -108,6 +116,7 @@ validate_result() {
   local evaluation_bundle_sha256=""
   local hydra_revision=""
   local hydra_bundle_sha256=""
+  local harbor_constraints_sha256=""
 
   validation_index=$((validation_index + 1))
   result_id="$(basename "${result_dir}")"
@@ -195,8 +204,10 @@ validate_result() {
     evidence_collector_revision="$(jq -r '.provenance.evidence_collector_revision' "${result_dir}/scorecard.json")"
     evaluation_base_revision="$(jq -r '.provenance.evaluation_base_revision' "${result_dir}/scorecard.json")"
     evaluation_bundle_sha256="$(jq -r '.provenance.evaluation_bundle_sha256' "${result_dir}/scorecard.json")"
+    harbor_constraints_sha256="$(jq -r '.provenance.harbor_constraints_sha256' "${result_dir}/scorecard.json")"
     validate_evaluation_bundle "${result_dir}" "${result_label}" \
-      "${evaluation_revision}" "${evaluation_base_revision}" "${evaluation_bundle_sha256}"
+      "${evaluation_revision}" "${evaluation_base_revision}" "${evaluation_bundle_sha256}" \
+      "config/harbor-0.22.0.constraints=${harbor_constraints_sha256}"
     cmp -s "${result_dir}/harbor/answer.txt" <(printf '42\n') \
       || fail "answer is not exactly 42 followed by newline in ${result_label}"
     jq -e --slurpfile scorecard "${result_dir}/scorecard.json" '

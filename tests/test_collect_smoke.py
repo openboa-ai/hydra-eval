@@ -60,7 +60,11 @@ class CollectSmokeTest(unittest.TestCase):
         git("commit", "--quiet", "-m", "base")
         base_revision = git("rev-parse", "HEAD")
         (repository / "evaluator.txt").write_text("evaluator\n")
-        git("add", "evaluator.txt")
+        (repository / "config").mkdir()
+        (repository / "config" / "harbor-0.22.0.constraints").write_text(
+            "harbor==0.22.0\n"
+        )
+        git("add", "evaluator.txt", "config/harbor-0.22.0.constraints")
         git("commit", "--quiet", "-m", "evaluator")
         evaluation_revision = git("rev-parse", "HEAD")
         git("bundle", "create", str(bundle), "HEAD", f"^{base_revision}")
@@ -168,6 +172,9 @@ class CollectSmokeTest(unittest.TestCase):
                 evaluation_revision,
                 evaluation_base_revision,
             ) = self.make_evaluation_bundle(root)
+            harbor_constraints_sha256 = hashlib.sha256(
+                (repository_root / "config" / "harbor-0.22.0.constraints").read_bytes()
+            ).hexdigest()
             args = types.SimpleNamespace(
                 oracle_job_dir=oracle,
                 job_dir=codex,
@@ -182,7 +189,7 @@ class CollectSmokeTest(unittest.TestCase):
                 environment_image="ubuntu:24.04@sha256:" + "e" * 64,
                 harbor_version="0.22.0",
                 harbor_python_version="3.12.11",
-                harbor_constraints_sha256="1" * 64,
+                harbor_constraints_sha256=harbor_constraints_sha256,
                 uv_version="0.8.3",
                 host_os="darwin",
                 host_architecture="arm64",
@@ -221,7 +228,8 @@ class CollectSmokeTest(unittest.TestCase):
             )
             self.assertEqual(scorecard["provenance"]["harbor_python_version"], "3.12.11")
             self.assertEqual(
-                scorecard["provenance"]["harbor_constraints_sha256"], "1" * 64
+                scorecard["provenance"]["harbor_constraints_sha256"],
+                harbor_constraints_sha256,
             )
             self.assertEqual(scorecard["provenance"]["uv_version"], "0.8.3")
             self.assertEqual(
@@ -291,6 +299,9 @@ class CollectSmokeTest(unittest.TestCase):
                 evaluation_revision,
                 evaluation_base_revision,
             ) = self.make_evaluation_bundle(root)
+            harbor_constraints_sha256 = hashlib.sha256(
+                (repository_root / "config" / "harbor-0.22.0.constraints").read_bytes()
+            ).hexdigest()
             args = types.SimpleNamespace(
                 oracle_job_dir=oracle,
                 job_dir=codex,
@@ -305,7 +316,7 @@ class CollectSmokeTest(unittest.TestCase):
                 environment_image="ubuntu:24.04@sha256:" + "e" * 64,
                 harbor_version="0.22.0",
                 harbor_python_version="3.12.11",
-                harbor_constraints_sha256="1" * 64,
+                harbor_constraints_sha256=harbor_constraints_sha256,
                 uv_version="0.8.3",
                 host_os="darwin",
                 host_architecture="arm64",
@@ -345,6 +356,9 @@ class CollectSmokeTest(unittest.TestCase):
                 evaluation_revision,
                 evaluation_base_revision,
             ) = self.make_evaluation_bundle(root)
+            harbor_constraints_sha256 = hashlib.sha256(
+                (repository_root / "config" / "harbor-0.22.0.constraints").read_bytes()
+            ).hexdigest()
             args = types.SimpleNamespace(
                 oracle_job_dir=oracle,
                 job_dir=codex,
@@ -359,7 +373,7 @@ class CollectSmokeTest(unittest.TestCase):
                 environment_image="ubuntu:24.04@sha256:" + "e" * 64,
                 harbor_version="0.22.0",
                 harbor_python_version="3.12.11",
-                harbor_constraints_sha256="1" * 64,
+                harbor_constraints_sha256=harbor_constraints_sha256,
                 uv_version="0.8.3",
                 host_os="darwin",
                 host_architecture="arm64",

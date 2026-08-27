@@ -174,6 +174,8 @@ def check_evaluation_bundle(args: argparse.Namespace) -> None:
             args.evaluation_base_revision,
             "--repository",
             str(args.repository_root),
+            "--expected-file-sha256",
+            f"config/harbor-0.22.0.constraints={args.harbor_constraints_sha256}",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
