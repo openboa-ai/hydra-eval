@@ -102,7 +102,15 @@ class CollectSmokeTest(unittest.TestCase):
         git("bundle", "create", str(bundle), "HEAD", f"^{base_revision}")
         return repository, bundle, evaluation_revision, base_revision
 
-    def make_job(self, root: Path, name: str, agent: str, job_id: str) -> Path:
+    def make_job(
+        self,
+        root: Path,
+        name: str,
+        agent: str,
+        job_id: str,
+        *,
+        include_cost: bool = True,
+    ) -> Path:
         job_dir = root / name
         trial_dir = job_dir / "trial-1"
         rewards = {"answer_exact": 1, "reward": 1}
@@ -122,16 +130,18 @@ class CollectSmokeTest(unittest.TestCase):
             "started_at": "2026-08-27T00:00:00Z",
             "finished_at": "2026-08-27T00:00:02Z",
         }
+        stats = {
+            "n_completed_trials": 1,
+            "n_errored_trials": 0,
+            "n_input_tokens": 100,
+            "n_cache_tokens": 10,
+            "n_output_tokens": 20,
+        }
+        if include_cost:
+            stats["cost_usd"] = 0.001
         job_result = {
             "id": job_id,
-            "stats": {
-                "n_completed_trials": 1,
-                "n_errored_trials": 0,
-                "n_input_tokens": 100,
-                "n_cache_tokens": 10,
-                "n_output_tokens": 20,
-                "cost_usd": 0.001,
-            },
+            "stats": stats,
         }
         write_json(job_dir / "result.json", job_result)
         write_json(trial_dir / "config.json", {"task": "smoke-question-answer"})
@@ -204,7 +214,11 @@ class CollectSmokeTest(unittest.TestCase):
                 root, "oracle", "oracle", "00000000-0000-0000-0000-000000000001"
             )
             codex = self.make_job(
-                root, "codex", "codex", "00000000-0000-0000-0000-000000000002"
+                root,
+                "codex",
+                "codex",
+                "00000000-0000-0000-0000-000000000002",
+                include_cost=False,
             )
             judge_result = root / "judge-result.json"
             judge_events = root / "judge-events.jsonl"
@@ -304,6 +318,11 @@ class CollectSmokeTest(unittest.TestCase):
                 },
             )
             self.assertEqual(scorecard["measures"]["judge"]["input_tokens"], 30)
+            self.assertIsNone(
+                scorecard["measures"]["cost"][
+                    "solver_api_equivalent_estimate_usd"
+                ]
+            )
             self.assertTrue((result_dir / "harbor" / "trajectory.json").is_file())
             self.assertTrue(
                 (result_dir / "harbor" / "environment-manifest.json").is_file()

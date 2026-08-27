@@ -186,6 +186,26 @@ HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
   "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD
 mv "${self_contained_dir}" "${fixture_repo}/self-contained-main-smoke-result"
 
+unknown_cost_job_id="00000000-0000-0000-0000-000000000018"
+unknown_cost_dir="${fixture_repo}/results/smoke/${unknown_cost_job_id}"
+cp -R "${result_dir}" "${unknown_cost_dir}"
+unknown_cost_scorecard_tmp="${unknown_cost_dir}/scorecard.json.tmp"
+jq --arg job_id "${unknown_cost_job_id}" '
+  .job_id = $job_id
+  | .measures.cost.solver_api_equivalent_estimate_usd = null
+' "${unknown_cost_dir}/scorecard.json" > "${unknown_cost_scorecard_tmp}"
+mv "${unknown_cost_scorecard_tmp}" "${unknown_cost_dir}/scorecard.json"
+unknown_cost_job_tmp="${unknown_cost_dir}/harbor/job-result.json.tmp"
+jq --arg job_id "${unknown_cost_job_id}" '
+  .id = $job_id
+  | del(.stats.cost_usd)
+' "${unknown_cost_dir}/harbor/job-result.json" > "${unknown_cost_job_tmp}"
+mv "${unknown_cost_job_tmp}" "${unknown_cost_dir}/harbor/job-result.json"
+write_smoke_checksums "${unknown_cost_dir}"
+HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD
+mv "${unknown_cost_dir}" "${fixture_repo}/unknown-cost-smoke-result"
+
 ln -s /etc/passwd "${result_dir}/leaked-artifact"
 if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
   "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
@@ -445,6 +465,40 @@ if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
   exit 1
 fi
 mv "${unsupported_pass_dir}" "${fixture_repo}/unsupported-hydra-pass-result"
+
+mismatched_assertion_result_id="00000000-0000-0000-0000-000000000019"
+mismatched_assertion_dir="${fixture_repo}/results/hydra/0.1.0/${mismatched_assertion_result_id}"
+cp -R "${hydra_result_dir}" "${mismatched_assertion_dir}"
+mismatched_assertion_scorecard_tmp="${mismatched_assertion_dir}/scorecard.json.tmp"
+jq --arg result_id "${mismatched_assertion_result_id}" '.result_id = $result_id' \
+  "${mismatched_assertion_dir}/scorecard.json" > "${mismatched_assertion_scorecard_tmp}"
+mv "${mismatched_assertion_scorecard_tmp}" "${mismatched_assertion_dir}/scorecard.json"
+printf '%s\n' '{"passed":false,"name":"different-assertion"}' \
+  > "${mismatched_assertion_dir}/artifacts/verifier.json"
+write_hydra_checksums "${mismatched_assertion_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: assertion evidence disagreeing with its scorecard was accepted' >&2
+  exit 1
+fi
+mv "${mismatched_assertion_dir}" "${fixture_repo}/mismatched-assertion-result"
+
+composite_measure_result_id="00000000-0000-0000-0000-000000000020"
+composite_measure_dir="${fixture_repo}/results/hydra/0.1.0/${composite_measure_result_id}"
+cp -R "${hydra_result_dir}" "${composite_measure_dir}"
+composite_measure_scorecard_tmp="${composite_measure_dir}/scorecard.json.tmp"
+jq --arg result_id "${composite_measure_result_id}" '
+  .result_id = $result_id
+  | .measures = {score: 1}
+' "${composite_measure_dir}/scorecard.json" > "${composite_measure_scorecard_tmp}"
+mv "${composite_measure_scorecard_tmp}" "${composite_measure_dir}/scorecard.json"
+write_hydra_checksums "${composite_measure_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: composite-only Hydra measures were accepted' >&2
+  exit 1
+fi
+mv "${composite_measure_dir}" "${fixture_repo}/composite-measure-result"
 
 printf '%s\n' '41' > "${result_dir}/harbor/answer.txt"
 git -C "${fixture_repo}" add results

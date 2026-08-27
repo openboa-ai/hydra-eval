@@ -202,7 +202,10 @@ validate_result() {
       and (.measures.judge.output_tokens | nonnegative_integer)
       and .measures.cost.billing_basis == "ChatGPT subscription"
       and .measures.cost.billed_cost_usd == "unknown"
-      and (.measures.cost.solver_api_equivalent_estimate_usd | nonnegative_number)
+      and (
+        .measures.cost.solver_api_equivalent_estimate_usd == null
+        or (.measures.cost.solver_api_equivalent_estimate_usd | nonnegative_number)
+      )
       and .measures.cost.judge_api_equivalent_estimate_usd == "unknown"
     ' "${result_dir}/scorecard.json" >/dev/null \
       || fail "invalid scorecard provenance in ${result_label}"
@@ -362,6 +365,9 @@ PY
     jq -e --arg hydra_version "${hydra_version}" --arg result_id "${result_id}" '
       def matches($pattern): type == "string" and test($pattern);
       def nonempty: type == "string" and length > 0;
+      def nonnegative_number: type == "number" and . >= 0;
+      def nonempty_measure:
+        nonnegative_number or (type == "object" and length > 0);
       def evidence_path:
         type == "string"
         and test("^artifacts/[A-Za-z0-9._/-]+$")
@@ -387,6 +393,8 @@ PY
       and (.provenance.verifier.name | nonempty)
       and ((.provenance.verifier.version // .provenance.verifier.revision) | nonempty)
       and (.assertions | type == "array" and length > 0)
+      and ((.assertions | map(.name) | unique | length) == (.assertions | length))
+      and ((.assertions | map(.evidence) | unique | length) == (.assertions | length))
       and all(.assertions[];
         (type == "object")
         and (.name | nonempty)
@@ -400,12 +408,37 @@ PY
         else any(.assertions[]; (.passed | not))
         end
       )
-      and (.measures | type == "object" and length > 0)
+      and (
+        .measures
+        | type == "object"
+        and length > 0
+        and (has("score") | not)
+        and (has("overall_score") | not)
+        and (has("composite_score") | not)
+        and (
+          (.elapsed_seconds | nonempty_measure)
+          or (.duration_seconds | nonempty_measure)
+          or (.latency_seconds | nonempty_measure)
+          or (.time | nonempty_measure)
+          or (.tokens | nonempty_measure)
+          or (.cost | nonempty_measure)
+          or (.quality | nonempty_measure)
+          or (.safety | nonempty_measure)
+        )
+      )
     ' "${result_dir}/scorecard.json" >/dev/null \
       || fail "missing required Hydra provenance in ${result_label}"
     while IFS= read -r assertion_evidence; do
       [[ -f "${result_dir}/${assertion_evidence}" ]] \
         || fail "missing Hydra assertion evidence ${assertion_evidence} in ${result_label}"
+      jq -e --arg evidence "${assertion_evidence}" \
+        --slurpfile scorecard "${result_dir}/scorecard.json" '
+        ($scorecard[0].assertions | map(select(.evidence == $evidence))) as $assertions
+        | ($assertions | length) == 1
+        and .name == $assertions[0].name
+        and .passed == $assertions[0].passed
+      ' "${result_dir}/${assertion_evidence}" >/dev/null \
+        || fail "Hydra assertion evidence disagrees with the scorecard for ${assertion_evidence} in ${result_label}"
     done < <(jq -r '.assertions[].evidence' "${result_dir}/scorecard.json")
     evaluation_revision="$(jq -r '.provenance.evaluation_revision' "${result_dir}/scorecard.json")"
     evaluation_base_revision="$(jq -r '.provenance.evaluation_base_revision' "${result_dir}/scorecard.json")"
