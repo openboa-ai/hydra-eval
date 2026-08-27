@@ -1,0 +1,48 @@
+name: validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evaluation-structure:
+    name: evaluation-structure
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Check foundation layout
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test -f README.md
+          test -f EVALUATION.md
+          test -f tasks/README.md
+          test -f results/README.md
+          test ! -e evals.json
+          test ! -e grader.py
+          test ! -e runner.py
+          test ! -e jobs
+          if git rev-parse --verify "$BASE_SHA^{commit}" >/dev/null 2>&1; then
+            git diff --check "$BASE_SHA" "$HEAD_SHA"
+          else
+            git diff --check HEAD^ HEAD
+          fi
+      - name: Check public evidence hygiene
+        run: |
+          ! find . -type f -not -path './.git/*' -not -path './.github/*' -size +2M -print -quit | grep -q .
+          # Scan every tracked file so hidden files and force-added ignored
+          # evidence cannot bypass the public repository credential check.
+          ! git grep -n -E 'sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}' -- .
