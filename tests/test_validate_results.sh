@@ -22,6 +22,8 @@ printf '%s\n' 'evaluator source' > "${fixture_repo}/evaluator-source.txt"
 mkdir -p "${fixture_repo}/config"
 cp "${source_root}/config/harbor-0.22.0.constraints" \
   "${fixture_repo}/config/harbor-0.22.0.constraints"
+cp "${source_root}/config/codex-low-cost.toml" \
+  "${fixture_repo}/config/codex-low-cost.toml"
 fixture_constraints_sha256="$(shasum -a 256 "${fixture_repo}/config/harbor-0.22.0.constraints" | awk '{print $1}')"
 fixture_environment_manifest="${fixture_repo}/fixture-environment-manifest.json"
 jq -c -n '{
@@ -43,6 +45,7 @@ printf 'FROM %s\n\nWORKDIR /app\n' "${fixture_environment_image}" \
   > "${fixture_repo}/tasks/smoke-question-answer/environment/Dockerfile"
 git -C "${fixture_repo}" add \
   evaluator-source.txt \
+  config/codex-low-cost.toml \
   config/harbor-0.22.0.constraints \
   tasks/smoke-question-answer
 git -C "${fixture_repo}" commit -q -m evaluator-source
@@ -163,6 +166,7 @@ jq --arg revision "${evaluation_revision}" \
   --arg base_revision "${repository_base_revision}" \
   --arg bundle_sha256 "${evaluation_bundle_sha256}" \
   --arg hydra_bundle_sha256 "${hydra_bundle_sha256}" \
+  --arg task_checksum "${fixture_task_checksum}" \
   --arg verifier_sha256 "${fixture_verifier_sha256}" '
     .provenance.hydra_revision = $revision
     | .provenance.hydra_bundle_sha256 = $hydra_bundle_sha256
@@ -170,6 +174,7 @@ jq --arg revision "${evaluation_revision}" \
     | .provenance.evaluation_base_revision = $base_revision
     | .provenance.evaluation_bundle_sha256 = $bundle_sha256
     | .provenance.task = "smoke-question-answer"
+    | .provenance.task_checksum = $task_checksum
     | .provenance.verifier.name = "tasks/smoke-question-answer/tests/test.sh"
     | .provenance.verifier.revision = $revision
     | .provenance.verifier.sha256 = $verifier_sha256
@@ -185,9 +190,11 @@ printf '%s\n' 'artifact' > "${hydra_result_dir}/artifacts/output.txt"
 printf '%s\n' '{"passed":true,"name":"expected-output"}' > "${hydra_result_dir}/artifacts/verifier.json"
 printf '%s\n' '{"id":"harbor-job","stats":{"n_completed_trials":1,"n_errored_trials":0}}' \
   > "${hydra_result_dir}/artifacts/job-result.json"
-printf '%s\n' '{"task_name":"smoke-question-answer","config":{"job_id":"harbor-job"},"agent_info":{"name":"codex","version":"0.147.0","model_info":{"name":"gpt-5.6-luna"}},"agent_result":{"n_input_tokens":10,"n_cache_tokens":3,"n_output_tokens":2,"cost_usd":0.001},"started_at":"2026-08-27T00:00:00Z","finished_at":"2026-08-27T00:00:01.500000Z","exception_info":null}' \
+printf '%s\n' '{"task_name":"smoke-question-answer","task_checksum":"task-checksum","config":{"job_id":"harbor-job"},"agent_info":{"name":"codex","version":"0.147.0","model_info":{"name":"gpt-5.6-luna"}},"agent_result":{"n_input_tokens":10,"n_cache_tokens":3,"n_output_tokens":2,"cost_usd":0.001},"started_at":"2026-08-27T00:00:00Z","finished_at":"2026-08-27T00:00:01.500000Z","exception_info":null}' \
+  | jq --arg checksum "${fixture_task_checksum}" '.task_checksum = $checksum' \
   > "${hydra_result_dir}/artifacts/trial-result.json"
-printf '%s\n' '{"task":{"name":"smoke-question-answer","digest":"sha256:environment"},"agent":{"name":"codex","model_name":"openai/gpt-5.6-luna","kwargs":{"version":"0.147.0"}},"environment":{"type":"docker"}}' \
+printf '%s\n' '{"task":{"name":"smoke-question-answer","digest":"task-checksum"},"agent":{"name":"codex","model_name":"openai/gpt-5.6-luna","kwargs":{"version":"0.147.0"}},"environment":{"type":"docker"}}' \
+  | jq --arg checksum "${fixture_task_checksum}" '.task.digest = $checksum' \
   > "${hydra_result_dir}/artifacts/trial-lock.json"
 write_hydra_checksums "${hydra_result_dir}"
 
@@ -197,6 +204,22 @@ base_sha="$(git -C "${fixture_repo}" rev-parse HEAD)"
 
 HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
   "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD
+
+mkdir "${fixture_repo}/results/smoke/.run"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: dot-prefixed smoke result directory was skipped' >&2
+  exit 1
+fi
+rmdir "${fixture_repo}/results/smoke/.run"
+
+mkdir "${fixture_repo}/results/hydra/.0.1.0"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: dot-prefixed Hydra version directory was skipped' >&2
+  exit 1
+fi
+rmdir "${fixture_repo}/results/hydra/.0.1.0"
 
 fixture_tree="$(git -C "${fixture_repo}" rev-parse "${base_sha}^{tree}")"
 squash_sha="$(
@@ -551,6 +574,27 @@ if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
 fi
 mv "${wrong_judge_identity_dir}" "${fixture_repo}/wrong-judge-identity-smoke-result"
 
+wrong_reasoning_job_id="00000000-0000-0000-0000-000000000030"
+wrong_reasoning_dir="${fixture_repo}/results/smoke/${wrong_reasoning_job_id}"
+cp -R "${result_dir}" "${wrong_reasoning_dir}"
+wrong_reasoning_scorecard_tmp="${wrong_reasoning_dir}/scorecard.json.tmp"
+jq --arg job_id "${wrong_reasoning_job_id}" '
+  .job_id = $job_id
+  | .provenance.solver_reasoning = "high"
+' "${wrong_reasoning_dir}/scorecard.json" > "${wrong_reasoning_scorecard_tmp}"
+mv "${wrong_reasoning_scorecard_tmp}" "${wrong_reasoning_dir}/scorecard.json"
+wrong_reasoning_job_tmp="${wrong_reasoning_dir}/harbor/job-result.json.tmp"
+jq --arg job_id "${wrong_reasoning_job_id}" '.id = $job_id' \
+  "${wrong_reasoning_dir}/harbor/job-result.json" > "${wrong_reasoning_job_tmp}"
+mv "${wrong_reasoning_job_tmp}" "${wrong_reasoning_dir}/harbor/job-result.json"
+write_smoke_checksums "${wrong_reasoning_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: solver reasoning diverging from bundled config was accepted' >&2
+  exit 1
+fi
+mv "${wrong_reasoning_dir}" "${fixture_repo}/wrong-solver-reasoning-smoke-result"
+
 invalid_result_dir="${fixture_repo}/results/hydra/0.1.0/00000000-0000-0000-0000-000000000003"
 mkdir -p "${invalid_result_dir}/source"
 cp "${result_dir}/source/evaluation.bundle" "${invalid_result_dir}/source/evaluation.bundle"
@@ -625,6 +669,31 @@ if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
   exit 1
 fi
 mv "${wrong_verifier_dir}" "${fixture_repo}/wrong-hydra-verifier-result"
+
+wrong_task_digest_result_id="00000000-0000-0000-0000-000000000031"
+wrong_task_digest_dir="${fixture_repo}/results/hydra/0.1.0/${wrong_task_digest_result_id}"
+cp -R "${hydra_result_dir}" "${wrong_task_digest_dir}"
+wrong_task_digest_scorecard_tmp="${wrong_task_digest_dir}/scorecard.json.tmp"
+jq --arg result_id "${wrong_task_digest_result_id}" '
+  .result_id = $result_id
+  | .provenance.task_checksum = ("f" * 64)
+' "${wrong_task_digest_dir}/scorecard.json" > "${wrong_task_digest_scorecard_tmp}"
+mv "${wrong_task_digest_scorecard_tmp}" "${wrong_task_digest_dir}/scorecard.json"
+wrong_task_digest_trial_tmp="${wrong_task_digest_dir}/artifacts/trial-result.json.tmp"
+jq '.task_checksum = ("f" * 64)' \
+  "${wrong_task_digest_dir}/artifacts/trial-result.json" > "${wrong_task_digest_trial_tmp}"
+mv "${wrong_task_digest_trial_tmp}" "${wrong_task_digest_dir}/artifacts/trial-result.json"
+wrong_task_digest_lock_tmp="${wrong_task_digest_dir}/artifacts/trial-lock.json.tmp"
+jq '.task.digest = ("f" * 64)' \
+  "${wrong_task_digest_dir}/artifacts/trial-lock.json" > "${wrong_task_digest_lock_tmp}"
+mv "${wrong_task_digest_lock_tmp}" "${wrong_task_digest_dir}/artifacts/trial-lock.json"
+write_hydra_checksums "${wrong_task_digest_dir}"
+if HYDRA_EVAL_REPO_ROOT="${fixture_repo}" \
+  "${source_root}/scripts/validate-results.sh" "${base_sha}" HEAD >/dev/null 2>&1; then
+  printf '%s\n' 'test_validate_results: fabricated Hydra task digest absent from evaluator bundle was accepted' >&2
+  exit 1
+fi
+mv "${wrong_task_digest_dir}" "${fixture_repo}/wrong-hydra-task-digest-result"
 
 unsupported_pass_result_id="00000000-0000-0000-0000-000000000012"
 unsupported_pass_dir="${fixture_repo}/results/hydra/0.1.0/${unsupported_pass_result_id}"

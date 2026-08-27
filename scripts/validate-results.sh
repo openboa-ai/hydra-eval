@@ -6,6 +6,7 @@ repo_root="${HYDRA_EVAL_REPO_ROOT:-$(cd "${script_dir}/.." && pwd)}"
 smoke_root="${repo_root}/results/smoke"
 hydra_root="${repo_root}/results/hydra"
 source_bundle_checker="${script_dir}/check_source_bundle.py"
+codex_config="${repo_root}/config/codex-low-cost.toml"
 base_sha="${1:-}"
 head_sha="${2:-HEAD}"
 temporary="$(mktemp -d /tmp/hydra-eval-results-validation.XXXXXX)"
@@ -19,6 +20,13 @@ fail() {
   printf 'validate-results: %s\n' "$*" >&2
   exit 1
 }
+
+[[ -f "${codex_config}" ]] || fail "missing Codex solver config"
+[[ "$(grep -Ec '^[[:space:]]*model_reasoning_effort[[:space:]]*=' "${codex_config}")" == "1" ]] \
+  || fail "Codex solver config must declare model_reasoning_effort exactly once"
+grep -Eq '^[[:space:]]*model_reasoning_effort[[:space:]]*=[[:space:]]*"low"[[:space:]]*$' \
+  "${codex_config}" || fail "Codex solver config must pin low reasoning"
+codex_config_sha256="$(shasum -a 256 "${codex_config}" | awk '{print $1}')"
 
 git -C "${repo_root}" rev-parse --verify "${head_sha}^{commit}" >/dev/null 2>&1 \
   || fail "head revision is unavailable: ${head_sha}"
@@ -61,6 +69,7 @@ validate_evaluation_bundle() {
   local expected_docker_image="${7:-}"
   local expected_task_checksum="${8:-}"
   local expected_constraint="${9:-}"
+  local expected_codex_config_sha256="${10:-}"
   local bundle_path="${result_dir}/source/evaluation.bundle"
   local expected_prerequisite="${evaluation_base_revision}"
   local checker_args=()
@@ -92,6 +101,12 @@ validate_evaluation_bundle() {
   fi
   if [[ -n "${expected_constraint}" ]]; then
     checker_args+=(--expected-constraint "${expected_constraint}")
+  fi
+  if [[ -n "${expected_codex_config_sha256}" ]]; then
+    checker_args+=(
+      --expected-file-sha256
+      "config/codex-low-cost.toml=${expected_codex_config_sha256}"
+    )
   fi
   python3 "${checker_args[@]}" >/dev/null \
     || fail "evaluation source bundle provenance or object safety failed in ${result_label}"
@@ -132,6 +147,8 @@ validate_result() {
   local environment_image=""
   local verifier_name=""
   local verifier_sha256=""
+  local task_name=""
+  local task_checksum=""
 
   validation_index=$((validation_index + 1))
   result_id="$(basename "${result_dir}")"
@@ -191,7 +208,7 @@ validate_result() {
       and .provenance.solver_agent == "codex"
       and (.provenance.solver_agent_version | nonempty)
       and (.provenance.solver_model | nonempty)
-      and (.provenance.solver_reasoning | nonempty)
+      and .provenance.solver_reasoning == "low"
       and .provenance.judge_agent == "codex"
       and (.provenance.judge_agent_version | nonempty)
       and (.provenance.judge_model | nonempty)
@@ -231,7 +248,8 @@ validate_result() {
       "config/harbor-0.22.0.constraints=${harbor_constraints_sha256}" \
       "tasks/smoke-question-answer/environment/Dockerfile=${environment_image}" \
       "tasks/smoke-question-answer=$(jq -r '.provenance.task_checksum' "${result_dir}/scorecard.json")" \
-      "config/harbor-0.22.0.constraints:harbor=$(jq -r '.provenance.harbor_version' "${result_dir}/scorecard.json")"
+      "config/harbor-0.22.0.constraints:harbor=$(jq -r '.provenance.harbor_version' "${result_dir}/scorecard.json")" \
+      "${codex_config_sha256}"
     cmp -s "${result_dir}/harbor/answer.txt" <(printf '42\n') \
       || fail "answer is not exactly 42 followed by newline in ${result_label}"
     jq -e --slurpfile scorecard "${result_dir}/scorecard.json" '
@@ -440,6 +458,7 @@ PY
       )
       and (.provenance.evaluation_bundle_sha256 | matches("^[0-9a-f]{64}$"))
       and (.provenance.task | matches("^[A-Za-z0-9._-]+$"))
+      and (.provenance.task_checksum | matches("^[0-9a-f]{64}$"))
       and (.provenance.client.name | nonempty)
       and (.provenance.client.version | nonempty)
       and (.provenance.model.name | nonempty)
@@ -542,6 +561,7 @@ PY
     jq -e --slurpfile scorecard "${result_dir}/scorecard.json" '
       .config.job_id == $scorecard[0].provenance.job_id
       and .task_name == $scorecard[0].provenance.task
+      and .task_checksum == $scorecard[0].provenance.task_checksum
       and .agent_info.name == $scorecard[0].provenance.client.name
       and .agent_info.version == $scorecard[0].provenance.client.version
       and .agent_info.model_info.name == $scorecard[0].provenance.model.name
@@ -557,7 +577,7 @@ PY
       def nonempty: type == "string" and test("\\S");
       ($scorecard[0].provenance.model.name) as $model
       | .task.name == $scorecard[0].provenance.task
-      and .task.digest == $scorecard[0].provenance.environment.fingerprint
+      and .task.digest == $scorecard[0].provenance.task_checksum
       and .agent.name == $scorecard[0].provenance.client.name
       and .agent.kwargs.version == $scorecard[0].provenance.client.version
       and (
@@ -614,9 +634,13 @@ PY
     hydra_bundle_sha256="$(jq -r '.provenance.hydra_bundle_sha256' "${result_dir}/scorecard.json")"
     verifier_name="$(jq -r '.provenance.verifier.name' "${result_dir}/scorecard.json")"
     verifier_sha256="$(jq -r '.provenance.verifier.sha256' "${result_dir}/scorecard.json")"
+    task_name="$(jq -r '.provenance.task' "${result_dir}/scorecard.json")"
+    task_checksum="$(jq -r '.provenance.task_checksum' "${result_dir}/scorecard.json")"
     validate_evaluation_bundle "${result_dir}" "${result_label}" \
       "${evaluation_revision}" "${evaluation_base_revision}" "${evaluation_bundle_sha256}" \
-      "${verifier_name}=${verifier_sha256}"
+      "${verifier_name}=${verifier_sha256}" \
+      "" \
+      "tasks/${task_name}=${task_checksum}"
     validate_hydra_bundle "${result_dir}" "${result_label}" \
       "${hydra_revision}" "${hydra_bundle_sha256}"
   fi
@@ -649,15 +673,27 @@ for result_root in "${smoke_root}" "${hydra_root}"; do
   fi
 done
 
-for result_dir in "${smoke_root}"/*/; do
-  [[ -d "${result_dir}" ]] || continue
-  validate_result "${result_dir}" smoke
-done
+validate_component_name() {
+  local path="$1"
+  local label="$2"
+  local name=""
 
-for version_dir in "${hydra_root}"/*/; do
-  [[ -d "${version_dir}" ]] || continue
-  for result_dir in "${version_dir}"/*/; do
-    [[ -d "${result_dir}" ]] || continue
-    validate_result "${result_dir}" hydra
-  done
-done
+  name="$(basename "${path}")"
+  [[ "${name}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+    || fail "unsupported ${label} directory name: ${name}"
+}
+
+while IFS= read -r -d '' result_dir; do
+  validate_component_name "${result_dir}" "smoke result"
+  validate_result "${result_dir}" smoke
+done < <(find "${smoke_root}" -mindepth 1 -maxdepth 1 -type d -print0)
+
+if [[ -d "${hydra_root}" ]]; then
+  while IFS= read -r -d '' version_dir; do
+    validate_component_name "${version_dir}" "Hydra version"
+    while IFS= read -r -d '' result_dir; do
+      validate_component_name "${result_dir}" "Hydra result"
+      validate_result "${result_dir}" hydra
+    done < <(find "${version_dir}" -mindepth 1 -maxdepth 1 -type d -print0)
+  done < <(find "${hydra_root}" -mindepth 1 -maxdepth 1 -type d -print0)
+fi
