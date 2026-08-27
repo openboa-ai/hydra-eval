@@ -1,0 +1,20 @@
+{
+  "agent_info": {
+    "model_info": null,
+    "name": "oracle",
+    "version": "1.0.0"
+  },
+  "exception_info": null,
+  "finished_at": "2026-08-27T13:12:26.857621Z",
+  "id": "37e13dcf-9f88-4a66-b451-18b9ff62a2b5",
+  "started_at": "2026-08-27T13:12:15.039578Z",
+  "task_checksum": "c0bda4d9dd6a15e8cba75e29112f42c0f563ef7d074d4f00007ac90d5c555202",
+  "task_name": "openboa/hydra-eval-smoke-question-answer",
+  "trial_name": "smoke-question-answer__Na4tCQK",
+  "verifier_result": {
+    "rewards": {
+      "answer_exact": 1,
+      "reward": 1
+    }
+  }
+}

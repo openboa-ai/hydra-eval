@@ -2,19 +2,30 @@
 
 This directory stores reviewed and sanitized evidence, not live job output.
 
+Evaluator plumbing evidence belongs under `results/smoke/<harbor-job-id>/`. It proves only that the runner, agent, verifier, trajectory capture, judge, and evidence path worked. Hydra evaluation evidence remains separate under `results/hydra/<version>/<result-id>/`.
+
 Use this layout for a real Hydra evaluation:
 
 ```text
 results/hydra/<version>/<result-id>/
 ├── README.md
-├── scorecard.md       # reviewed claims and separate measures
-├── scorecard.json     # only when the reviewed run already has a stable JSON result
+├── scorecard.md       # optional human-readable claims and separate measures
+├── scorecard.json     # required machine-readable identity and provenance
 ├── checksums.txt      # hashes for preserved artifacts
-└── artifacts/         # sanitized Harbor-native evidence, when allowed
+├── source/
+│   ├── evaluation.bundle  # evaluator source; delta with exact base, or self-contained
+│   └── hydra.bundle       # self-contained Hydra candidate source
+└── artifacts/
+    ├── job-result.json    # sanitized Harbor job result
+    ├── trial-result.json  # sanitized Harbor trial result and configuration
+    ├── trial-lock.json    # sanitized Harbor task/agent/environment lock
+    └── ...                # assertion outputs and other reviewed artifacts
 ```
 
-The exact Harbor `config.json`, `result.json`, trial/trajectory files, and verifier output remain the source evidence. The files above are a small reviewed presentation of that evidence, not a replacement schema. If a future Harbor version changes its native output, record the version and preserve the original shape rather than silently translating it.
+The exact Harbor `config.json`, `result.json`, trial/trajectory files, verifier output, and raw judge events remain the local source evidence in ignored `jobs/`. Public files are a small reviewed presentation: keep the native job result and sanitized judge metrics where safe, remove host paths and unrelated agent context from the public trial and ATIF trajectory, retain the original schema version, and preserve the exact evaluation commit in `source/evaluation.bundle`. A real Hydra result must also preserve the exact candidate revision in a self-contained `source/hydra.bundle`; a 40-character revision string alone is not retrievable evidence. If a future Harbor version changes its native output, record the version rather than silently claiming equivalence.
 
-Each result must state the Hydra revision, evaluation revision, task/dataset, client and version, model, environment, job/trial identifiers, verifier/reviewer, and time/token/cost/safety observations. Keep private inputs, credentials, sensitive traces, and holdout data outside this public repository.
+Each Hydra `scorecard.json` must state the Hydra version and revision, result ID, evaluation revision, task, client and version, model, environment fingerprint, job ID, and verifier identity before CI will accept and permanently protect it. The client, version, model, environment fingerprint, and job ID must agree with checksummed sanitized Harbor `job-result.json`, `trial-result.json`, and `trial-lock.json` files; nonempty scorecard strings are not execution evidence. The verifier identity is the standard `tasks/<task>/tests/test.sh` path, the evaluation revision, and the SHA-256 of that file in the verified evaluator bundle. It must also contain at least one deterministic, model, or human assertion linked to checksummed JSON evidence under `artifacts/`; the evidence must repeat the same assertion `name` and `passed` outcome. Model assertions additionally require a rubric, reason, and grader name, version, and model; human assertions require a rubric, reason, and reviewer name. A `pass` is accepted only when every recorded assertion passed. In `0.1.0`, measures are limited to elapsed seconds, input/cache/output tokens, and cost values that match the native Harbor trial result. Quality and safety remain assertions until an evidence-backed measure format is introduced. A smoke result has no Hydra revision and must say so through its `evaluator_smoke` kind and non-benchmark claim; it must preserve the complete task, Harbor, solver, judge invocation, host/container platform, registry-authenticated OCI image index and resolved child descriptor, environment, and measure provenance emitted by the collector.
 
-Results are append-only. A flawed result gets an invalidation record; it is not edited in place and not deleted merely because a later candidate is better.
+Result bundles must contain regular files and directories only. Symlinks are rejected because their targets are outside the bundle checksum and can change independently. Before publication, Git bundle headers, prerequisites, advertised revisions, and every introduced Git object are inspected; this catches credentials left in deleted files as well as current files. Smoke validation also requires the recorded container platform and child digest to match one descriptor in the checksummed native OCI index. Keep private inputs, credentials, sensitive traces, and holdout data outside this public repository.
+
+Smoke and Hydra results are append-only. CI compares the pull request base and head to reject any change or deletion inside an already published `results/smoke/<job-id>/` or `results/hydra/<version>/<result-id>/` directory, verifies that the recorded evaluation commit is recoverable from a checksummed Git bundle whose prerequisite equals the recorded base (or has no prerequisite when the base is `null`), hashes the constraints file and recomputes Harbor's task checksum from that verified revision, authenticates the OCI index bytes against the pinned image digest, requires a self-contained candidate bundle for Hydra results, cross-checks smoke solver and judge identity/measures against preserved evidence, and verifies that each checksum manifest covers the exact public file set. A flawed result gets an invalidation record; it is not edited in place and not deleted merely because a later candidate is better.

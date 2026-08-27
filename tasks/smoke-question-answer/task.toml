@@ -1,0 +1,20 @@
+schema_version = "1.4"
+
+[task]
+name = "openboa/hydra-eval-smoke-question-answer"
+version = "0.1.0"
+description = "A trivial question-answer task that proves the evaluator can complete one agent run."
+authors = [{ name = "OpenBoa" }]
+keywords = ["smoke", "question-answer", "codex"]
+
+[agent]
+timeout_sec = 120.0
+
+[verifier]
+timeout_sec = 30.0
+
+[environment]
+build_timeout_sec = 300.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 2048

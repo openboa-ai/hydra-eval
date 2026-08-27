@@ -1,0 +1,10 @@
+{
+  "agent": "codex",
+  "agent_version": "0.144.5",
+  "ephemeral": true,
+  "ignore_rules": true,
+  "ignore_user_config": true,
+  "model": "gpt-5.6-luna",
+  "reasoning": "low",
+  "sandbox": "read-only"
+}
