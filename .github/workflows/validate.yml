@@ -20,7 +20,12 @@ jobs:
     steps:
       - name: Check out candidate
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
       - name: Check foundation layout
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           test -f README.md
           test -f EVALUATION.md
@@ -30,8 +35,12 @@ jobs:
           test ! -e grader.py
           test ! -e runner.py
           test ! -e jobs
-          git diff --check
+          if git rev-parse --verify "$BASE_SHA^{commit}" >/dev/null 2>&1; then
+            git diff --check "$BASE_SHA" "$HEAD_SHA"
+          else
+            git diff --check HEAD^ HEAD
+          fi
       - name: Check public evidence hygiene
         run: |
           ! find . -type f -not -path './.git/*' -not -path './.github/*' -size +2M -print -quit | grep -q .
-          ! rg -n 'sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}' --glob '!*.md' .
+          ! rg -n 'sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}' .
