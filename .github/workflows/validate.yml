@@ -138,7 +138,10 @@ jobs:
           ! find . -type f -not -path './.git/*' -not -path './.github/*' -size +2M -print -quit | grep -q .
           ! git grep -n -E 'sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}' -- .
           ! git grep -n -E '(AKIA|ASIA)[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{20,}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----' -- .
-          ! git grep -n -i -E "[\"']?(access|refresh|id)[_-]?token[\"']?[[:space:]]*[:=][[:space:]]*[\"']?[A-Za-z0-9._~-]{16,}" -- .
+          assigned_token_pattern="[\"']?(access|refresh|id)[_-]?token[\"']?[[:space:]]*[:=][[:space:]]*[\"']?[A-Za-z0-9._~-]{16,}"
+          quoted_token_probe="$(printf 'access_token=\"%s\"' "$(printf 'a%.0s' {1..24})")"
+          printf '%s\n' "${quoted_token_probe}" | grep -i -E "${assigned_token_pattern}" >/dev/null
+          ! git grep -n -i -E "${assigned_token_pattern}" -- .
           ! git grep -n -E 'access[_-]?token|refresh[_-]?token|id[_-]?token' -- results
           ! git grep -n -E 'file:///Users/|/Users/[^/[:space:]]+|file:///home/|/home/[^/[:space:]]+' -- results
           ! git grep -n -E '<recommended_plugins>|<skills_instructions>|"thread_id"' -- results
