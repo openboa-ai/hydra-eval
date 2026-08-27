@@ -1,0 +1,23 @@
+{
+  "agent_info": {
+    "model_info": {
+      "name": "gpt-5.6-luna",
+      "provider": "openai"
+    },
+    "name": "codex",
+    "version": "0.147.0"
+  },
+  "exception_info": null,
+  "finished_at": "2026-08-27T13:14:02.460671Z",
+  "id": "429f8930-c007-4589-8d50-3c9a648c8e6f",
+  "started_at": "2026-08-27T13:12:28.657759Z",
+  "task_checksum": "c0bda4d9dd6a15e8cba75e29112f42c0f563ef7d074d4f00007ac90d5c555202",
+  "task_name": "openboa/hydra-eval-smoke-question-answer",
+  "trial_name": "smoke-question-answer__m7wZkpx",
+  "verifier_result": {
+    "rewards": {
+      "answer_exact": 1,
+      "reward": 1
+    }
+  }
+}

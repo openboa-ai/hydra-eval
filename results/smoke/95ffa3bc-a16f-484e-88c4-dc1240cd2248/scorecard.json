@@ -1,0 +1,72 @@
+{
+  "checks": {
+    "ai_judge": {
+      "reason": "The answer is 42, which correctly solves 19 + 23; verifier reports answer_exact=1 and reward=1.",
+      "score": 1,
+      "verdict": "pass"
+    },
+    "atif_trajectory": "present",
+    "deterministic_verifier": {
+      "answer_exact": 1,
+      "reward": 1
+    },
+    "oracle_reference": "pass"
+  },
+  "claim": "The minimal evaluator plumbing completed; this is not a Hydra benchmark result.",
+  "job_id": "95ffa3bc-a16f-484e-88c4-dc1240cd2248",
+  "kind": "evaluator_smoke",
+  "measures": {
+    "cost": {
+      "billed_cost_usd": "unknown",
+      "billing_basis": "ChatGPT subscription",
+      "judge_api_equivalent_estimate_usd": "unknown",
+      "solver_api_equivalent_estimate_usd": 0.001665
+    },
+    "judge": {
+      "cached_input_tokens": 14080,
+      "elapsed_seconds": 8.384226083755493,
+      "input_tokens": 29388,
+      "output_tokens": 171,
+      "reasoning_output_tokens": 20
+    },
+    "solver": {
+      "cache_tokens": 17920,
+      "elapsed_seconds": 93.802912,
+      "input_tokens": 23931,
+      "output_tokens": 87
+    }
+  },
+  "provenance": {
+    "container_runtime": {
+      "base_manifest_digest": "sha256:95fa486768020359141f1318720f43e7982ef926c792891d984aef9aaf05e7ea",
+      "platform": "linux/arm64/v8"
+    },
+    "environment_image": "ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517",
+    "evaluation_base_revision": "7267bedd2671e56bcb2e9004510b513590afae94",
+    "evaluation_bundle_sha256": "636b84e1f87c6d88ad2c8de10a0f2ee53ab3ca27311b99ed276eca74d84bb8d3",
+    "evaluation_revision": "22bbb1d3cbfa0bcd59de5d4a81b9e36ba295ecfc",
+    "evidence_collector_revision": "22bbb1d3cbfa0bcd59de5d4a81b9e36ba295ecfc",
+    "harbor_constraints_sha256": "7d16a40fcd095a71d8f3eb102238898d700790230b450ff178d411a0ccf94a9f",
+    "harbor_python_version": "3.12.11",
+    "harbor_version": "0.22.0",
+    "host_runtime": {
+      "architecture": "arm64",
+      "os": "darwin",
+      "python_platform": "macosx-11.0-arm64"
+    },
+    "judge_agent": "codex",
+    "judge_agent_version": "0.144.5",
+    "judge_model": "gpt-5.6-luna",
+    "judge_reasoning": "low",
+    "oracle_job_id": "c229acdd-bf57-4f94-933a-af38be4ff196",
+    "oracle_task_checksum": "c0bda4d9dd6a15e8cba75e29112f42c0f563ef7d074d4f00007ac90d5c555202",
+    "solver_agent": "codex",
+    "solver_agent_version": "0.147.0",
+    "solver_model": "gpt-5.6-luna",
+    "solver_reasoning": "low",
+    "task": "openboa/hydra-eval-smoke-question-answer",
+    "task_checksum": "c0bda4d9dd6a15e8cba75e29112f42c0f563ef7d074d4f00007ac90d5c555202",
+    "uv_version": "0.8.3"
+  },
+  "status": "pass"
+}
